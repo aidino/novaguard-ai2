@@ -1,14 +1,11 @@
 import json
 import logging
 import time
-import re
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Union
 from pathlib import Path
 
 import tempfile # Để tạo thư mục tạm
-import shutil   # Để xóa thư mục
-from pathlib import Path
 
 from sqlalchemy.orm import Session, sessionmaker  # Đảm bảo import Session
 from app.models.project_model import LLMProviderEnum, OutputLanguageEnum # Import các Enum này nếu cần so sánh
