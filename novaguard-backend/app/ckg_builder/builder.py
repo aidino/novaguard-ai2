@@ -2,12 +2,12 @@
 import logging
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple, Union
+import json
 
-from neo4j import AsyncDriver # Đảm bảo AsyncDriver được import
+from neo4j import AsyncDriver
 
 from app.core.graph_db import get_async_neo4j_driver
 from app.models import Project
-# Cập nhật import từ parsers để có ExtractedVariable
 from .parsers import get_code_parser, ParsedFileResult, ExtractedFunction, ExtractedClass, ExtractedImport, ExtractedVariable
 
 logger = logging.getLogger(__name__)
@@ -15,14 +15,12 @@ logger = logging.getLogger(__name__)
 class CKGBuilder:
     def __init__(self, project_model: Project, neo4j_driver: Optional[AsyncDriver] = None):
         self.project = project_model
-        # Tạo project_graph_id duy nhất cho mỗi project trong NovaGuard
         self.project_graph_id = f"novaguard_project_{self.project.id}"
         self._driver = neo4j_driver
 
     async def _get_driver(self) -> AsyncDriver:
         if self._driver and hasattr(self._driver, '_closed') and not self._driver._closed:
             return self._driver
-        # Đảm bảo hàm get_async_neo4j_driver() trả về driver hợp lệ hoặc raise lỗi
         driver = await get_async_neo4j_driver()
         if not driver or (hasattr(driver, '_closed') and driver._closed):
             logger.error("CKGBuilder: Neo4j driver is not available or closed.")
@@ -35,68 +33,85 @@ class CKGBuilder:
             return
         driver = await self._get_driver()
         db_name = getattr(driver, 'database', None) or getattr(driver, '_database', 'neo4j')
-        
+
         async with driver.session(database=db_name) as session:
-            tx = None # Khởi tạo tx để có thể rollback trong khối finally nếu cần
+            tx = None
+            current_query_for_log: Optional[str] = None
+            current_params_for_log: Optional[Dict[str, Any]] = None
             try:
                 tx = await session.begin_transaction()
                 for query, params in queries_with_params:
-                    # logger.debug(f"CKG Executing Cypher: {query} with params: {params}")
+                    current_query_for_log = query
+                    current_params_for_log = params
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(f"CKG Executing Cypher: {query[:300]}... with params: {json.dumps(params, indent=2) if params else '{}'}")
                     await tx.run(query, params)
                 await tx.commit()
-                tx = None # Reset tx sau khi commit thành công
+                tx = None
             except Exception as e:
-                logger.error(f"CKGBuilder: Error running Cypher batch. Error: {e}", exc_info=True)
-                if tx: # Nếu transaction đã bắt đầu và chưa commit/rollback
+                logger.error(
+                    f"CKGBuilder: Error running Cypher batch. "
+                    f"Failed Query (approx): '{str(current_query_for_log)[:500]}...'. "
+                    f"Params for failed query: {json.dumps(current_params_for_log, indent=2) if current_params_for_log else '{}'}. Error: {e}",
+                    exc_info=True
+                )
+                if tx:
                     try:
                         logger.info("CKGBuilder: Attempting to rollback transaction due to error.")
                         await tx.rollback()
                     except Exception as e_rb:
                         logger.error(f"CKGBuilder: Error during transaction rollback: {e_rb}", exc_info=True)
-                raise # Re-raise lỗi để hàm gọi bên ngoài xử lý
+                raise
 
     async def _execute_write_queries_with_results(self, queries_with_params: List[Tuple[str, Dict[str, Any]]]):
-        # ... (Giữ nguyên logic hàm này từ các phản hồi trước, đảm bảo xử lý lỗi và transaction tương tự _execute_write_queries) ...
         if not queries_with_params: return []
         driver = await self._get_driver()
         db_name = getattr(driver, 'database', None) or getattr(driver, '_database', 'neo4j')
         all_results = []
         async with driver.session(database=db_name) as session:
             tx = None
+            current_query_for_log: Optional[str] = None
+            current_params_for_log: Optional[Dict[str, Any]] = None
             try:
                 tx = await session.begin_transaction()
                 for query, params in queries_with_params:
+                    current_query_for_log = query
+                    current_params_for_log = params
+                    if logger.isEnabledFor(logging.DEBUG):
+                         logger.debug(f"CKG Executing Cypher (with results): {query[:300]}... with params: {json.dumps(params, indent=2) if params else '{}'}")
                     result_cursor = await tx.run(query, params)
                     records = [record.data() async for record in result_cursor]
-                    summary = await result_cursor.consume() # Quan trọng: consume result
+                    await result_cursor.consume()
                     all_results.append(records)
                 await tx.commit()
                 tx = None
             except Exception as e:
-                logger.error(f"CKGBuilder: Error running Cypher batch (with results). Error: {e}", exc_info=True)
+                logger.error(
+                    f"CKGBuilder: Error running Cypher batch (with results). "
+                    f"Failed Query (approx): '{str(current_query_for_log)[:500]}...'. "
+                    f"Params for failed query: {json.dumps(current_params_for_log, indent=2) if current_params_for_log else '{}'}. Error: {e}",
+                    exc_info=True
+                )
                 if tx: await tx.rollback()
                 raise
         return all_results
 
-
     async def _ensure_project_node(self):
-        # Đã được cung cấp ở các phản hồi trước, đảm bảo nó tạo Node :Project
-        # với graph_id, name, novaguard_id, language và các timestamp.
         query = """
         MERGE (p:Project {graph_id: $project_graph_id})
-        ON CREATE SET p.name = $repo_name, 
-                      p.novaguard_id = $novaguard_project_id, 
-                      p.language = $language, 
+        ON CREATE SET p.name = $repo_name,
+                      p.novaguard_id = $novaguard_project_id,
+                      p.language = $language,
                       p.created_at = timestamp()
-        ON MATCH SET p.name = $repo_name, 
-                     p.language = $language, 
-                     p.novaguard_id = $novaguard_project_id, 
+        ON MATCH SET p.name = $repo_name,
+                     p.language = $language,
+                     p.novaguard_id = $novaguard_project_id,
                      p.updated_at = timestamp()
         """
         params = {
             "project_graph_id": self.project_graph_id,
             "repo_name": self.project.repo_name,
-            "novaguard_project_id": str(self.project.id), # Neo4j có thể xử lý int, nhưng string an toàn hơn
+            "novaguard_project_id": str(self.project.id),
             "language": self.project.language
         }
         await self._execute_write_queries([(query, params)])
@@ -105,42 +120,26 @@ class CKGBuilder:
     async def _clear_existing_data_for_file(self, file_path_in_repo: str):
         file_composite_id = f"{self.project_graph_id}:{file_path_in_repo}"
         logger.info(f"CKGBuilder: Clearing existing CKG data for file '{file_path_in_repo}' in project '{self.project_graph_id}'")
-        
-        # Query này cần xóa tất cả các node được "ancored" hoặc "defined in" file này
-        # và các relationships của chúng.
-        # Các node có thể là: Class, Function, Method, Variable, Decorator, ExceptionType (nếu được coi là defined in file)
-        # Variable nodes có composite_id bao gồm file_path, nên chúng sẽ dễ tìm hơn.
         query = """
         MATCH (file_node:File {composite_id: $file_composite_id})
-        // Tìm Entities (Class, Function/Method) được định nghĩa TRỰC TIẾP trong file này
         OPTIONAL MATCH (entity)-[:DEFINED_IN]->(file_node)
-        WHERE any(label IN labels(entity) WHERE label IN ['Class', 'Function']) // Function bao gồm Method
-        
-        // Tìm Variables được định nghĩa TRỰC TIẾP trong file này (global vars)
-        // hoặc các Variable là con của các Entities trên (params, local vars, attributes)
+        WHERE any(label IN labels(entity) WHERE label IN ['Class', 'Function'])
         OPTIONAL MATCH (var_global:Variable)-[:DEFINED_IN_FILE]->(file_node)
         OPTIONAL MATCH (entity)-[:HAS_PARAMETER|DECLARES_VARIABLE|DECLARES_ATTRIBUTE]->(var_child:Variable)
-
-        // Tìm Decorators được định nghĩa/áp dụng trong file này (giả sử decorator node có file_path)
         OPTIONAL MATCH (dec:Decorator {file_path: $file_path_prop, project_graph_id: $project_graph_id_prop})
-        
-        // Thu thập tất cả các node cần xóa (file, entities, vars, decorators liên quan đến file này)
-        // Cần cẩn thận để không xóa các ExceptionType dùng chung nếu chúng không "thuộc" file này
-        WITH file_node, 
-             collect(DISTINCT entity) as entities_in_file, 
+        WITH file_node,
+             collect(DISTINCT entity) as entities_in_file,
              collect(DISTINCT var_global) as global_vars_in_file,
              collect(DISTINCT var_child) as child_vars_of_entities,
              collect(DISTINCT dec) as decorators_in_file
-        
-        // Gộp tất cả các node cần xóa vào một danh sách
         WITH file_node, entities_in_file + global_vars_in_file + child_vars_of_entities + decorators_in_file + [file_node] as all_nodes_to_delete_from_file
         UNWIND all_nodes_to_delete_from_file as ntd
-        DETACH DELETE ntd // Xóa node và tất cả relationships của nó
+        DETACH DELETE ntd
         RETURN count(DISTINCT ntd) as deleted_nodes_count
         """
         params = {
             "file_composite_id": file_composite_id,
-            "file_path_prop": file_path_in_repo, # Để tìm decorator theo file_path
+            "file_path_prop": file_path_in_repo,
             "project_graph_id_prop": self.project_graph_id
         }
         try:
@@ -156,41 +155,45 @@ class CKGBuilder:
     def _prepare_variable_cypher_tuple(
         self,
         var_data: ExtractedVariable,
-        file_path_in_repo: str, # File nơi biến này được trích xuất
-        owner_composite_id: Optional[str], 
+        file_path_in_repo: str,
+        owner_composite_id: Optional[str],
         owner_node_label: Optional[str],
         relationship_type_from_owner: Optional[str]
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
-        
-        scope_owner_identifier = var_data.scope_name # Tên của function/class hoặc tên file cho global
-        
-        # Tạo composite_id cho Variable
-        # <project_id>:<file_path_defined>:<owner_scope_name>:<var_name>:<line_defined>
-        var_composite_id = f"{self.project_graph_id}:{file_path_in_repo}:{scope_owner_identifier}:{var_data.name}:{var_data.start_line}"
+
+        scope_owner_identifier = var_data.scope_name if var_data.scope_name and var_data.scope_name.strip() else "unknown_scope"
+        var_name_safe = var_data.name if var_data.name and var_data.name.strip() else "unknown_variable"
+
+        var_composite_id = f"{self.project_graph_id}:{file_path_in_repo}:{scope_owner_identifier}:{var_name_safe}:{var_data.start_line}"
 
         var_props = {
-            "name": var_data.name,
-            "file_path": file_path_in_repo, 
+            "name": var_name_safe,
+            "file_path": file_path_in_repo,
             "start_line": var_data.start_line,
             "end_line": var_data.end_line,
-            "scope_name": var_data.scope_name, 
-            "scope_type": var_data.scope_type, 
-            "var_type_hint": var_data.var_type, 
+            "scope_name": scope_owner_identifier,
+            "scope_type": var_data.scope_type or "unknown",
             "is_parameter": var_data.is_parameter,
             "project_graph_id": self.project_graph_id,
             "composite_id": var_composite_id
         }
+        if var_data.var_type is not None and var_data.var_type.strip():
+            var_props["var_type_hint"] = var_data.var_type.strip()
+
+        on_match_set_parts = ["v.end_line = $var_props.end_line"]
+        if "var_type_hint" in var_props:
+             on_match_set_parts.append("v.var_type_hint = $var_props.var_type_hint")
+        on_match_set_parts.append("v.ckg_updated_at = timestamp()")
+        on_match_set_clause = ", ".join(on_match_set_parts)
+
         cypher = ""
         params = {}
-
         if owner_composite_id and owner_node_label and relationship_type_from_owner:
             cypher = f"""
             MATCH (owner:{owner_node_label} {{composite_id: $owner_composite_id}})
             MERGE (v:Variable {{composite_id: $var_composite_id}})
             ON CREATE SET v = $var_props, v.ckg_created_at = timestamp()
-            ON MATCH SET v.end_line = $var_props.end_line, 
-                         v.var_type_hint = $var_props.var_type_hint, 
-                         v.ckg_updated_at = timestamp()
+            ON MATCH SET {on_match_set_clause}
             MERGE (owner)-[:{relationship_type_from_owner}]->(v)
             """
             params = {
@@ -198,15 +201,13 @@ class CKGBuilder:
                 "var_composite_id": var_composite_id,
                 "var_props": var_props
             }
-        elif var_data.scope_type == "global_variable": # scope_type "file" được đổi thành "global_variable"
+        elif var_data.scope_type == "global_variable":
             file_composite_id_for_global = f"{self.project_graph_id}:{file_path_in_repo}"
-            cypher = """
-            MATCH (f:File {composite_id: $file_composite_id})
-            MERGE (v:Variable {composite_id: $var_composite_id})
+            cypher = f"""
+            MATCH (f:File {{composite_id: $file_composite_id}})
+            MERGE (v:Variable {{composite_id: $var_composite_id}})
             ON CREATE SET v = $var_props, v.ckg_created_at = timestamp()
-            ON MATCH SET v.end_line = $var_props.end_line, 
-                         v.var_type_hint = $var_props.var_type_hint, 
-                         v.ckg_updated_at = timestamp()
+            ON MATCH SET {on_match_set_clause}
             MERGE (v)-[:DEFINED_IN_FILE]->(f)
             """
             params = {
@@ -214,7 +215,7 @@ class CKGBuilder:
                 "var_composite_id": var_composite_id,
                 "var_props": var_props
             }
-        
+
         if cypher:
             return (cypher, params)
         logger.warning(f"CKGBuilder: Could not determine Cypher for variable: {var_data.name} in scope {var_data.scope_name} (type: {var_data.scope_type})")
@@ -237,15 +238,104 @@ class CKGBuilder:
             logger.error(f"CKGBuilder: Failed to parse file {file_path_in_repo} for CKG. Parser returned None.")
             return
 
-        await self._clear_existing_data_for_file(file_path_in_repo)
+        # ========================================================================
+        # ĐỊNH NGHĨA CÁC CHUỖI CYPHER CON CHO APOC Ở ĐÂY (NGOÀI VÒNG LẶP)
+        # ========================================================================
+        sub_query_attempt1_true = """
+            MATCH (caller_cls:Class {name: $ccn_prop, project_graph_id: $pgid_prop})
+            OPTIONAL MATCH (callee_direct:Method {name: $cn_prop, class_name: $ccn_prop, project_graph_id: $pgid_prop})
+            WHERE (callee_direct)-[:DEFINED_IN_CLASS]->(caller_cls)
+            WITH caller_cls, callee_direct
+            OPTIONAL MATCH (caller_cls)-[:INHERITS_FROM*0..5]->(superclass:Class)
+            OPTIONAL MATCH (callee_super:Method {name: $cn_prop, project_graph_id: $pgid_prop})
+            WHERE (callee_super)-[:DEFINED_IN_CLASS]->(superclass) AND callee_direct IS NULL
+            RETURN COALESCE(callee_direct, callee_super) AS found
+        """
+        sub_query_attempt1_false = "RETURN null AS found"
 
+        # SỬA LỖI: Định nghĩa sub_query_attempt1 ở đây
+        sub_query_attempt1 = f"""
+            CALL apoc.when($ct_prop STARTS WITH "instance" OR $ct_prop STARTS WITH "class_method_call_on_own_class",
+                {json.dumps(sub_query_attempt1_true)},
+                {json.dumps(sub_query_attempt1_false)},
+                {{ccn_prop: $ccn_prop, cn_prop: $cn_prop, pgid_prop: $pgid_prop}}
+            ) YIELD value
+            RETURN value.found AS found
+        """
+
+        sub_query_attempt2_direct_constructor = """
+            OPTIONAL MATCH (fsf:Function {name: $cn_prop, file_path: $cfile_prop, project_graph_id: $pgid_prop, is_method: false})
+            WITH fsf
+            OPTIONAL MATCH (faf:Function {name: $cn_prop, project_graph_id: $pgid_prop, is_method: false}) WHERE fsf IS NULL
+            RETURN COALESCE(fsf, faf) AS found_func
+        """
+        sub_query_attempt2_class_method_true = """
+            MATCH (target_cls:Class {name: $bo_prop, project_graph_id: $pgid_prop})
+            OPTIONAL MATCH (cmethod:Method {name: $cn_prop, class_name: $bo_prop, project_graph_id: $pgid_prop})
+            WHERE (cmethod)-[:DEFINED_IN_CLASS]->(target_cls)
+            RETURN cmethod AS found_func
+        """
+        sub_query_attempt2_class_method_false = "RETURN null AS found_func"
+
+        sub_query_attempt2_else_for_direct = f"""
+            CALL apoc.when($ct_prop ENDS WITH "_on_class" AND $bo_prop IS NOT NULL,
+                {json.dumps(sub_query_attempt2_class_method_true)},
+                {json.dumps(sub_query_attempt2_class_method_false)},
+                {{bo_prop: $bo_prop, cn_prop: $cn_prop, pgid_prop: $pgid_prop}}
+            ) YIELD value AS class_method_result RETURN class_method_result.found_func AS found_func
+        """
+
+        sub_query_for_m2 = f"""
+            CALL apoc.when($ct_prop STARTS WITH "direct" OR $ct_prop STARTS WITH "constructor",
+                {json.dumps(sub_query_attempt2_direct_constructor)},
+                {json.dumps(sub_query_attempt2_else_for_direct)},
+                {{cn_prop: $cn_prop, cfile_prop: $cfile_prop, pgid_prop: $pgid_prop, ct_prop: $ct_prop, bo_prop: $bo_prop}}
+            ) YIELD value
+            RETURN value.found_func AS found_func
+        """
+
+        sub_query_attempt3_method_on_object = """
+            MATCH (m_other:Method {name: $cn_prop, project_graph_id: $pgid_prop})
+            RETURN m_other AS found_other LIMIT 1
+        """
+        sub_query_attempt3_false = "RETURN null AS found_other"
+
+        apoc_main_query_string = f"""
+            WITH $caller_cid AS caller_cid, $cn_prop AS cn_prop, $pgid_prop AS pgid_prop,
+                 $cfile_prop AS cfile_prop, $ct_prop AS ct_prop, $bo_prop AS bo_prop, $ccn_prop AS ccn_prop
+
+            CALL apoc.cypher.doIt({json.dumps(sub_query_attempt1)},
+                                  {{ccn_prop: $ccn_prop, cn_prop: $cn_prop, pgid_prop: $pgid_prop, ct_prop: $ct_prop}}) YIELD value AS res1_map
+            WITH res1_map.found AS found1, caller_cid, cn_prop, pgid_prop, cfile_prop, ct_prop, bo_prop, ccn_prop
+
+            CALL apoc.cypher.doIt(
+                CASE WHEN found1 IS NULL AND $cn_prop IS NOT NULL AND ($ct_prop STARTS WITH "direct" OR $ct_prop STARTS WITH "constructor" OR $ct_prop ENDS WITH "_on_class")
+                THEN {json.dumps(sub_query_for_m2)}
+                ELSE "RETURN null as found_func" END,
+                {{cn_prop: $cn_prop, cfile_prop: $cfile_prop, pgid_prop: $pgid_prop, ct_prop: $ct_prop, bo_prop: $bo_prop, ccn_prop:$ccn_prop, caller_cid:caller_cid}}
+            ) YIELD value AS res2_map
+            WITH found1, COALESCE(res2_map.found_func, null) AS found2, caller_cid, cn_prop, pgid_prop, cfile_prop, ct_prop, bo_prop, ccn_prop
+
+            CALL apoc.cypher.doIt(
+                CASE WHEN found1 IS NULL AND found2 IS NULL AND $ct_prop = "method_call_on_object" AND $cn_prop IS NOT NULL
+                THEN {json.dumps(sub_query_attempt3_method_on_object)}
+                ELSE {json.dumps(sub_query_attempt3_false)} END,
+                {{cn_prop: $cn_prop, pgid_prop: $pgid_prop}}
+            ) YIELD value AS res3_map
+
+            RETURN COALESCE(found1, found2, res3_map.found_other) AS final_callee
+        """
+        # ========================================================================
+        # KẾT THÚC ĐỊNH NGHĨA CHUỖI CYPHER CON
+        # ========================================================================
+
+        await self._clear_existing_data_for_file(file_path_in_repo)
         cypher_batch: List[Tuple[str, Dict[str, Any]]] = []
         file_composite_id = f"{self.project_graph_id}:{file_path_in_repo}"
 
-        # 1. File Node
         file_node_props = {
             "path": file_path_in_repo, "project_graph_id": self.project_graph_id,
-            "language": language, "name": Path(file_path_in_repo).name,
+            "language": language or "unknown", "name": Path(file_path_in_repo).name,
             "composite_id": file_composite_id, "line_count": len(file_content.splitlines()),
             "char_count": len(file_content)
         }
@@ -254,65 +344,80 @@ class CKGBuilder:
             MERGE (p:Project {graph_id: $project_graph_id})
             MERGE (f:File {composite_id: $file_composite_id})
             ON CREATE SET f = $props, f.ckg_created_at = timestamp()
-            ON MATCH SET f.language = $props.language, f.name = $props.name, 
-                         f.line_count = $props.line_count, f.char_count = $props.char_count, 
+            ON MATCH SET f.language = $props.language, f.name = $props.name,
+                         f.line_count = $props.line_count, f.char_count = $props.char_count,
                          f.ckg_updated_at = timestamp()
             MERGE (f)-[:PART_OF_PROJECT]->(p)
             """,
             {"project_graph_id": self.project_graph_id, "file_composite_id": file_composite_id, "props": file_node_props}
         ))
 
-        # 2. Import Nodes and Relationships
         for imp_data in parsed_data.imports:
-            if imp_data.module_path:
-                module_composite_id = f"{self.project_graph_id}:MODULE:{imp_data.module_path}"
-                module_name_from_path = imp_data.module_path.split('.')[-1]
-                if imp_data.relative_level > 0 and not imp_data.module_path.startswith('.'): # Đảm bảo module_path cho relative import bắt đầu bằng "."
-                    actual_module_path = "." * imp_data.relative_level + imp_data.module_path
-                    module_composite_id = f"{self.project_graph_id}:MODULE:{actual_module_path}"
-                else:
-                    actual_module_path = imp_data.module_path
+            if imp_data.module_path and imp_data.module_path.strip():
+                actual_module_path = imp_data.module_path.strip()
+                if not actual_module_path:
+                    logger.warning(f"CKGBuilder: Skipping import with empty module_path in file {file_path_in_repo}, line {imp_data.start_line}")
+                    continue
+
+                module_composite_id = f"{self.project_graph_id}:MODULE:{actual_module_path}"
+                module_name_from_path = actual_module_path.split('.')[-1] or actual_module_path
+
+                valid_imported_names = []
+                if imp_data.imported_names:
+                    for name, alias in imp_data.imported_names:
+                        if name and name.strip():
+                            valid_imported_names.append({"original": name.strip(), "alias": alias.strip() if alias else None})
+                        elif alias and alias.strip():
+                             valid_imported_names.append({"original": ".", "alias": alias.strip()})
 
                 cypher_batch.append((
                     """
                     MERGE (m:Module {composite_id: $module_composite_id})
-                    ON CREATE SET m.path = $module_path, m.name = $module_name, 
-                                  m.project_graph_id = $project_graph_id, m.is_stub = true, 
+                    ON CREATE SET m.path = $module_path, m.name = $module_name,
+                                  m.project_graph_id = $project_graph_id, m.is_stub = true,
                                   m.relative_level = $relative_level, m.ckg_created_at = timestamp()
-                    ON MATCH SET m.ckg_updated_at = timestamp() // Có thể cập nhật is_stub nếu module được parse sau
+                    ON MATCH SET m.ckg_updated_at = timestamp()
                     WITH m
                     MATCH (f:File {composite_id: $file_composite_id})
-                    MERGE (f)-[r:IMPORTS_MODULE {type: $import_type, line: $import_line}]->(m) // Đưa type, line vào key của MERGE
-                    ON CREATE SET r.imported_names = [item IN $imported_names_list WHERE item.original IS NOT NULL | item.original], 
+                    MERGE (f)-[r:IMPORTS_MODULE {type: $import_type, line: $import_line}]->(m)
+                    ON CREATE SET r.imported_names = [item IN $imported_names_list WHERE item.original IS NOT NULL | item.original],
                                   r.aliases = [item IN $imported_names_list WHERE item.alias IS NOT NULL | item.alias],
                                   r.timestamp = timestamp()
-                    ON MATCH SET  r.imported_names = [item IN $imported_names_list WHERE item.original IS NOT NULL | item.original], 
+                    ON MATCH SET  r.imported_names = [item IN $imported_names_list WHERE item.original IS NOT NULL | item.original],
                                   r.aliases = [item IN $imported_names_list WHERE item.alias IS NOT NULL | item.alias]
                     """, {
-                        "module_composite_id": module_composite_id, "module_path": actual_module_path,
-                        "module_name": module_name_from_path, "project_graph_id": self.project_graph_id,
-                        "relative_level": imp_data.relative_level, "file_composite_id": file_composite_id,
-                        "import_type": imp_data.import_type,
-                        "imported_names_list": [{"original": name, "alias": alias} for name, alias in imp_data.imported_names],
+                        "module_composite_id": module_composite_id,
+                        "module_path": actual_module_path,
+                        "module_name": module_name_from_path,
+                        "project_graph_id": self.project_graph_id,
+                        "relative_level": imp_data.relative_level,
+                        "file_composite_id": file_composite_id,
+                        "import_type": imp_data.import_type or "unknown",
+                        "imported_names_list": valid_imported_names,
                         "import_line": imp_data.start_line
                     }
                 ))
-        
-        # Xử lý Global Variables được parse từ file
+            else:
+                logger.warning(f"CKGBuilder: Skipping import with empty or None module_path in file {file_path_in_repo}, line {imp_data.start_line if imp_data else 'N/A'}")
+
         for g_var_data in parsed_data.global_variables:
+            if not g_var_data.name or not g_var_data.name.strip():
+                logger.warning(f"CKGBuilder: Skipping global variable with empty name in {file_path_in_repo} near line {g_var_data.start_line}")
+                continue
             cypher_tuple = self._prepare_variable_cypher_tuple(
-                g_var_data, file_path_in_repo, 
-                owner_composite_id=None, # Global vars không có owner là function/class trực tiếp
-                owner_node_label=None, 
-                relationship_type_from_owner=None
+                g_var_data, file_path_in_repo,
+                owner_composite_id=None, owner_node_label=None, relationship_type_from_owner=None
             )
             if cypher_tuple: cypher_batch.append(cypher_tuple)
 
-        # 3. Class Nodes & related (Methods, Attributes, Decorators, Superclasses, Exceptions)
         for cls_data in parsed_data.classes:
-            class_composite_id = f"{self.project_graph_id}:{file_path_in_repo}:{cls_data.name}:{cls_data.start_line}"
+            class_name_safe = cls_data.name.strip() if cls_data.name else None
+            if not class_name_safe:
+                logger.warning(f"CKGBuilder: Skipping class with empty name in {file_path_in_repo} at line {cls_data.start_line}")
+                continue
+            class_composite_id = f"{self.project_graph_id}:{file_path_in_repo}:{class_name_safe}:{cls_data.start_line}"
             class_props = {
-                "name": cls_data.name, "file_path": file_path_in_repo,
+                "name": class_name_safe, "file_path": file_path_in_repo,
                 "start_line": cls_data.start_line, "end_line": cls_data.end_line,
                 "project_graph_id": self.project_graph_id, "composite_id": class_composite_id
             }
@@ -327,8 +432,10 @@ class CKGBuilder:
                 {"file_composite_id": file_composite_id, "class_composite_id": class_composite_id, "props": class_props}
             ))
 
-            for super_name in cls_data.superclasses:
-                super_class_placeholder_id = f"{self.project_graph_id}:CLASS_PLACEHOLDER:{super_name}" # ID cho placeholder
+            for super_name_raw in cls_data.superclasses:
+                super_name = super_name_raw.strip() if isinstance(super_name_raw, str) else None
+                if not super_name: continue
+                super_class_placeholder_id = f"{self.project_graph_id}:CLASS_PLACEHOLDER:{super_name}"
                 cypher_batch.append((
                     """
                     MATCH (this_class:Class {composite_id: $class_composite_id})
@@ -336,25 +443,28 @@ class CKGBuilder:
                     ON CREATE SET super_class.placeholder = true, super_class.composite_id = $super_class_comp_id,
                                   super_class.file_path = "UNKNOWN", super_class.start_line = -1,
                                   super_class.ckg_created_at = timestamp()
-                    ON MATCH SET super_class.placeholder = COALESCE(super_class.placeholder, false) 
+                    ON MATCH SET super_class.placeholder = COALESCE(super_class.placeholder, false)
                     MERGE (this_class)-[:INHERITS_FROM]->(super_class)
                     """, {
                         "class_composite_id": class_composite_id, "super_name": super_name,
                         "project_graph_id": self.project_graph_id, "super_class_comp_id": super_class_placeholder_id
                     }
                 ))
-            
-            for attr_var in cls_data.attributes: # Class attributes
+
+            for attr_var in cls_data.attributes:
+                if not attr_var.name or not attr_var.name.strip(): continue
                 cypher_tuple = self._prepare_variable_cypher_tuple(attr_var, file_path_in_repo, class_composite_id, "Class", "DECLARES_ATTRIBUTE")
                 if cypher_tuple: cypher_batch.append(cypher_tuple)
 
-            for dec_name in cls_data.decorators: # Class decorators
+            for dec_name_raw in cls_data.decorators:
+                dec_name = dec_name_raw.strip() if isinstance(dec_name_raw, str) else None
+                if not dec_name: continue
                 decorator_class_comp_id = f"{self.project_graph_id}:{file_path_in_repo}:DECORATOR:{dec_name}:{cls_data.start_line}"
                 cypher_batch.append((
                     """
                     MATCH (owner:Class {composite_id: $owner_id})
                     MERGE (d:Decorator {composite_id: $dec_comp_id})
-                    ON CREATE SET d.name = $dec_name, d.project_graph_id = $project_graph_id, 
+                    ON CREATE SET d.name = $dec_name, d.project_graph_id = $project_graph_id,
                                   d.file_path = $file_path, d.applied_to_type = 'Class', d.ckg_created_at = timestamp()
                     MERGE (owner)-[:HAS_DECORATOR]->(d)
                     """, {
@@ -364,12 +474,17 @@ class CKGBuilder:
                 ))
 
             for method_data in cls_data.methods:
-                method_composite_id = f"{self.project_graph_id}:{file_path_in_repo}:{method_data.name}:{method_data.start_line}"
+                method_name_safe = method_data.name.strip() if method_data.name else None
+                if not method_name_safe:
+                    logger.warning(f"CKGBuilder: Skipping method with empty name in class {class_name_safe}, file {file_path_in_repo}")
+                    continue
+                method_composite_id = f"{self.project_graph_id}:{file_path_in_repo}:{method_name_safe}:{method_data.start_line}"
                 method_props = {
-                    "name": method_data.name, "file_path": file_path_in_repo,
+                    "name": method_name_safe, "file_path": file_path_in_repo,
                     "start_line": method_data.start_line, "end_line": method_data.end_line,
-                    "signature": method_data.signature, "parameters_str": method_data.parameters_str,
-                    "class_name": cls_data.name, "project_graph_id": self.project_graph_id,
+                    "signature": (method_data.signature.strip() if method_data.signature else "") or "",
+                    "parameters_str": (method_data.parameters_str.strip() if method_data.parameters_str else "") or "",
+                    "class_name": class_name_safe, "project_graph_id": self.project_graph_id,
                     "composite_id": method_composite_id, "is_method": True
                 }
                 cypher_batch.append((
@@ -378,7 +493,7 @@ class CKGBuilder:
                     MATCH (cls:Class {composite_id: $class_composite_id})
                     MERGE (m:Method:Function {composite_id: $method_composite_id})
                     ON CREATE SET m = $props, m.ckg_created_at = timestamp()
-                    ON MATCH SET m.end_line = $props.end_line, m.signature = $props.signature, 
+                    ON MATCH SET m.end_line = $props.end_line, m.signature = $props.signature,
                                  m.parameters_str = $props.parameters_str, m.class_name = $props.class_name,
                                  m.ckg_updated_at = timestamp()
                     MERGE (m)-[:DEFINED_IN]->(f)
@@ -389,12 +504,16 @@ class CKGBuilder:
                     }
                 ))
                 for param_var in method_data.parameters:
+                    if not param_var.name or not param_var.name.strip(): continue
                     cypher_tuple = self._prepare_variable_cypher_tuple(param_var, file_path_in_repo, method_composite_id, "Method", "HAS_PARAMETER")
                     if cypher_tuple: cypher_batch.append(cypher_tuple)
                 for local_var in method_data.local_variables:
+                    if not local_var.name or not local_var.name.strip(): continue
                     cypher_tuple = self._prepare_variable_cypher_tuple(local_var, file_path_in_repo, method_composite_id, "Method", "DECLARES_VARIABLE")
                     if cypher_tuple: cypher_batch.append(cypher_tuple)
-                for dec_name in method_data.decorators:
+                for dec_name_raw in method_data.decorators:
+                    dec_name = dec_name_raw.strip() if isinstance(dec_name_raw, str) else None
+                    if not dec_name: continue
                     decorator_method_comp_id = f"{self.project_graph_id}:{file_path_in_repo}:DECORATOR:{dec_name}:{method_data.start_line}"
                     cypher_batch.append((
                         """
@@ -408,7 +527,9 @@ class CKGBuilder:
                             "dec_comp_id": decorator_method_comp_id, "file_path": file_path_in_repo
                         }
                     ))
-                for ex_name in method_data.raised_exceptions:
+                for ex_name_raw in method_data.raised_exceptions:
+                    ex_name = ex_name_raw.strip() if isinstance(ex_name_raw, str) else None
+                    if not ex_name: continue
                     ex_type_comp_id = f"{self.project_graph_id}:EXCEPTION_TYPE:{ex_name}"
                     cypher_batch.append((
                         """
@@ -416,10 +537,12 @@ class CKGBuilder:
                         MERGE (ex:ExceptionType {composite_id: $ex_type_comp_id})
                         ON CREATE SET ex.name = $ex_name, ex.project_graph_id = $project_graph_id, ex.ckg_created_at = timestamp()
                         MERGE (owner)-[:RAISES_EXCEPTION]->(ex)
-                        """, {"owner_id": method_composite_id, "ex_name": ex_name, 
+                        """, {"owner_id": method_composite_id, "ex_name": ex_name,
                               "project_graph_id": self.project_graph_id, "ex_type_comp_id": ex_type_comp_id}
                     ))
-                for ex_name in method_data.handled_exceptions:
+                for ex_name_raw in method_data.handled_exceptions:
+                    ex_name = ex_name_raw.strip() if isinstance(ex_name_raw, str) else None
+                    if not ex_name: continue
                     ex_type_comp_id = f"{self.project_graph_id}:EXCEPTION_TYPE:{ex_name}"
                     cypher_batch.append((
                         """
@@ -427,17 +550,21 @@ class CKGBuilder:
                         MERGE (ex:ExceptionType {composite_id: $ex_type_comp_id})
                         ON CREATE SET ex.name = $ex_name, ex.project_graph_id = $project_graph_id, ex.ckg_created_at = timestamp()
                         MERGE (owner)-[:HANDLES_EXCEPTION]->(ex)
-                        """, {"owner_id": method_composite_id, "ex_name": ex_name, 
+                        """, {"owner_id": method_composite_id, "ex_name": ex_name,
                               "project_graph_id": self.project_graph_id, "ex_type_comp_id": ex_type_comp_id}
                     ))
 
-        # 4. Global Function Nodes & related
-        for func_data in parsed_data.functions: # Chỉ global functions
-            func_composite_id = f"{self.project_graph_id}:{file_path_in_repo}:{func_data.name}:{func_data.start_line}"
+        for func_data in parsed_data.functions:
+            func_name_safe = func_data.name.strip() if func_data.name else None
+            if not func_name_safe:
+                logger.warning(f"CKGBuilder: Skipping global function with empty name in file {file_path_in_repo} at line {func_data.start_line}")
+                continue
+            func_composite_id = f"{self.project_graph_id}:{file_path_in_repo}:{func_name_safe}:{func_data.start_line}"
             func_props = {
-                "name": func_data.name, "file_path": file_path_in_repo,
+                "name": func_name_safe, "file_path": file_path_in_repo,
                 "start_line": func_data.start_line, "end_line": func_data.end_line,
-                "signature": func_data.signature, "parameters_str": func_data.parameters_str,
+                "signature": (func_data.signature.strip() if func_data.signature else "") or "",
+                "parameters_str": (func_data.parameters_str.strip() if func_data.parameters_str else "") or "",
                 "project_graph_id": self.project_graph_id, "composite_id": func_composite_id,
                 "is_method": False
             }
@@ -446,20 +573,23 @@ class CKGBuilder:
                 MATCH (f:File {composite_id: $file_composite_id})
                 MERGE (fn:Function {composite_id: $func_composite_id})
                 ON CREATE SET fn = $props, fn.ckg_created_at = timestamp()
-                ON MATCH SET fn.end_line = $props.end_line, fn.signature = $props.signature, 
+                ON MATCH SET fn.end_line = $props.end_line, fn.signature = $props.signature,
                              fn.parameters_str = $props.parameters_str, fn.ckg_updated_at = timestamp()
                 MERGE (fn)-[:DEFINED_IN]->(f)
                 """,
                 {"file_composite_id": file_composite_id, "func_composite_id": func_composite_id, "props": func_props}
             ))
-            # Parameters, Local Vars, Decorators, Exceptions cho global functions
             for param_var in func_data.parameters:
-                cypher_tuple = self._prepare_variable_cypher_tuple(param_var, file_path_in_repo, func_composite_id, "Function", "HAS_PARAMETER")
-                if cypher_tuple: cypher_batch.append(cypher_tuple)
+                 if not param_var.name or not param_var.name.strip(): continue
+                 cypher_tuple = self._prepare_variable_cypher_tuple(param_var, file_path_in_repo, func_composite_id, "Function", "HAS_PARAMETER")
+                 if cypher_tuple: cypher_batch.append(cypher_tuple)
             for local_var in func_data.local_variables:
+                if not local_var.name or not local_var.name.strip(): continue
                 cypher_tuple = self._prepare_variable_cypher_tuple(local_var, file_path_in_repo, func_composite_id, "Function", "DECLARES_VARIABLE")
                 if cypher_tuple: cypher_batch.append(cypher_tuple)
-            for dec_name in func_data.decorators:
+            for dec_name_raw in func_data.decorators:
+                dec_name = dec_name_raw.strip() if isinstance(dec_name_raw, str) else None
+                if not dec_name: continue
                 decorator_func_comp_id = f"{self.project_graph_id}:{file_path_in_repo}:DECORATOR:{dec_name}:{func_data.start_line}"
                 cypher_batch.append((
                     """
@@ -473,7 +603,9 @@ class CKGBuilder:
                         "dec_comp_id": decorator_func_comp_id, "file_path": file_path_in_repo
                     }
                 ))
-            for ex_name in func_data.raised_exceptions:
+            for ex_name_raw in func_data.raised_exceptions:
+                ex_name = ex_name_raw.strip() if isinstance(ex_name_raw, str) else None
+                if not ex_name: continue
                 ex_type_comp_id = f"{self.project_graph_id}:EXCEPTION_TYPE:{ex_name}"
                 cypher_batch.append((
                     """
@@ -481,10 +613,12 @@ class CKGBuilder:
                     MERGE (ex:ExceptionType {composite_id: $ex_type_comp_id})
                     ON CREATE SET ex.name = $ex_name, ex.project_graph_id = $project_graph_id, ex.ckg_created_at = timestamp()
                     MERGE (owner)-[:RAISES_EXCEPTION]->(ex)
-                    """, {"owner_id": func_composite_id, "ex_name": ex_name, 
+                    """, {"owner_id": func_composite_id, "ex_name": ex_name,
                           "project_graph_id": self.project_graph_id, "ex_type_comp_id": ex_type_comp_id }
                 ))
-            for ex_name in func_data.handled_exceptions:
+            for ex_name_raw in func_data.handled_exceptions:
+                ex_name = ex_name_raw.strip() if isinstance(ex_name_raw, str) else None
+                if not ex_name: continue
                 ex_type_comp_id = f"{self.project_graph_id}:EXCEPTION_TYPE:{ex_name}"
                 cypher_batch.append((
                     """
@@ -492,148 +626,98 @@ class CKGBuilder:
                     MERGE (ex:ExceptionType {composite_id: $ex_type_comp_id})
                     ON CREATE SET ex.name = $ex_name, ex.project_graph_id = $project_graph_id, ex.ckg_created_at = timestamp()
                     MERGE (owner)-[:HANDLES_EXCEPTION]->(ex)
-                    """, {"owner_id": func_composite_id, "ex_name": ex_name, 
+                    """, {"owner_id": func_composite_id, "ex_name": ex_name,
                            "project_graph_id": self.project_graph_id, "ex_type_comp_id": ex_type_comp_id}
                 ))
-        
-        # Commit batch đầu tiên chứa các node và relationships cơ bản
+
         if cypher_batch:
             logger.debug(f"CKGBuilder: Executing main entity batch of {len(cypher_batch)} Cypher queries for file {file_path_in_repo}.")
-            await self._execute_write_queries(cypher_batch)
-        
-        # --- Link CALLS (Sử dụng Query Cypher Nâng Cao với APOC) ---
+            try:
+                await self._execute_write_queries(cypher_batch)
+            except Exception as e_main_batch:
+                logger.error(f"CKGBuilder: Error executing main entity batch for {file_path_in_repo}. Error: {e_main_batch}", exc_info=True)
+
+        # --- Link CALLS ---
         call_link_queries_batch: List[Tuple[str, Dict[str, Any]]] = []
         all_callable_entities_in_file = parsed_data.functions + [
             method for cls_data in parsed_data.classes for method in cls_data.methods
         ]
 
         for defined_entity in all_callable_entities_in_file:
+            defined_entity_name_safe = defined_entity.name.strip() if defined_entity.name else None
+            if not defined_entity_name_safe:
+                continue
             if not defined_entity.calls:
                 continue
 
-            caller_composite_id = f"{self.project_graph_id}:{file_path_in_repo}:{defined_entity.name}:{defined_entity.start_line}"
-            caller_node_label_for_match = ":Method:Function" if defined_entity.class_name else ":Function"
+            caller_composite_id = f"{self.project_graph_id}:{file_path_in_repo}:{defined_entity_name_safe}:{defined_entity.start_line}"
+            caller_class_name_safe = defined_entity.class_name.strip() if defined_entity.class_name else None
+            caller_node_label_for_match = ":Method:Function" if caller_class_name_safe else ":Function"
 
             for called_name, base_object_name, call_type, call_site_line in defined_entity.calls:
-                call_params = {
-                    "caller_composite_id": caller_composite_id,
-                    "callee_name_prop": called_name, # Tên hàm/method được gọi
-                    "project_graph_id_prop": self.project_graph_id,
-                    "caller_file_path_prop": file_path_in_repo,
-                    "call_type_prop": call_type, # Loại lời gọi từ parser
-                    "base_object_prop": base_object_name, # 'self', tên class, hoặc tên biến
-                    "call_site_line_prop": call_site_line,
-                    "caller_class_name_prop": defined_entity.class_name # Tên class của caller (nếu là method)
+
+                final_callee_name = called_name.strip() if isinstance(called_name, str) and called_name.strip() else None
+                final_base_object_name = base_object_name.strip() if isinstance(base_object_name, str) and base_object_name.strip() else None
+                final_caller_class_name = caller_class_name_safe
+                final_call_type = call_type.strip() if isinstance(call_type, str) and call_type.strip() else "unknown_call_type"
+
+                if not final_callee_name:
+                    logger.warning(
+                        f"CKGBuilder: Skipping CALLS link due to empty or None callee_name. "
+                        f"Original callee_name: '{called_name}'. Caller: '{defined_entity_name_safe}' in file '{file_path_in_repo}' at line {call_site_line}."
+                    )
+                    continue
+
+                apoc_subquery_params = {
+                    "caller_cid": caller_composite_id,
+                    "cn_prop": final_callee_name,
+                    "pgid_prop": self.project_graph_id,
+                    "cfile_prop": file_path_in_repo,
+                    "ct_prop": final_call_type,
+                    "bo_prop": final_base_object_name,
+                    "ccn_prop": final_caller_class_name
                 }
-                
-                # Query Cypher để tìm callee và tạo CALLS relationship.
-                # Query này cần APOC plugin.
+
+                params_for_apoc_call_query = {
+                    "caller_composite_id": caller_composite_id,
+                    "call_params": apoc_subquery_params,
+                    "call_type_prop": final_call_type,
+                    "base_object_prop": final_base_object_name,
+                    "call_site_line_prop": call_site_line
+                }
+
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"Preparing APOC CALLS query. Outer params: {json.dumps(params_for_apoc_call_query, indent=2)}")
+
                 resolve_and_link_query_apoc = f"""
                 MATCH (caller{caller_node_label_for_match} {{composite_id: $caller_composite_id}})
-                
-                CALL apoc.cypher.doIt('
-                    // Subquery để tìm callee, truyền các tham số cần thiết
-                    WITH $caller_composite_id AS caller_cid, 
-                         $callee_name_prop AS cn_prop, $project_graph_id_prop AS pgid_prop,
-                         $caller_file_path_prop AS cfile_prop, $call_type_prop AS ct_prop,
-                         $base_object_prop AS bo_prop, $caller_class_name_prop AS ccn_prop
-
-                    // Attempt 1: Instance method call (self.method())
-                    CALL apoc.when(ct_prop = "instance_method_call" AND ccn_prop IS NOT NULL,
-                        \\"
-                        MATCH (caller_cls:Class {{name: ccn_prop, project_graph_id: pgid_prop}})
-                        // Tìm method trong class này hoặc superclasses
-                        OPTIONAL MATCH (callee_direct:Method {{name: cn_prop, class_name: ccn_prop, project_graph_id: pgid_prop}})
-                        WHERE (callee_direct)-[:DEFINED_IN_CLASS]->(caller_cls)
-                        WITH caller_cls, callee_direct
-                        OPTIONAL MATCH (caller_cls)-[:INHERITS_FROM*0..5]->(superclass:Class)
-                        OPTIONAL MATCH (callee_super:Method {{name: cn_prop, project_graph_id: pgid_prop}})
-                        WHERE (callee_super)-[:DEFINED_IN_CLASS]->(superclass) AND callee_direct IS NULL
-                        RETURN COALESCE(callee_direct, callee_super) AS found
-                        \\",
-                        \\"RETURN null AS found\\",
-                        {{ccn_prop:ccn_prop, cn_prop:cn_prop, pgid_prop:pgid_prop}}
-                    ) YIELD value AS m1
-
-                    // Attempt 2: Direct function call or class method call
-                    CALL apoc.when(m1.found IS NULL,
-                        \\"
-                        CALL apoc.when(ct_prop STARTS WITH \\"direct\\" OR ct_prop STARTS WITH \\"constructor\\", // direct_function_call, constructor_call
-                            // Tìm Function (không phải method) trong cùng file hoặc toàn project
-                            \'\'\'
-                            OPTIONAL MATCH (fsf:Function {{name: cn_prop, file_path: cfile_prop, project_graph_id: pgid_prop, is_method: false}})
-                            WITH fsf
-                            OPTIONAL MATCH (faf:Function {{name: cn_prop, project_graph_id: pgid_prop, is_method: false}}) WHERE fsf IS NULL
-                            RETURN COALESCE(fsf, faf) AS found_func
-                            \'\'\',
-                            // Else (không phải direct call, có thể là class method call on class name)
-                            \'\'\' 
-                            CALL apoc.when(ct_prop ENDS WITH \\"_on_class\\" AND bo_prop IS NOT NULL,
-                                \\\'
-                                MATCH (target_cls:Class {{name: bo_prop, project_graph_id: pgid_prop}})
-                                OPTIONAL MATCH (cmethod:Method {{name: cn_prop, class_name: bo_prop, project_graph_id: pgid_prop}})
-                                WHERE (cmethod)-[:DEFINED_IN_CLASS]->(target_cls)
-                                RETURN cmethod AS found_func
-                                \\\',
-                                \\\'RETURN NULL AS found_func\\\', // Not a class method call on class name
-                                {{bo_prop:bo_prop, cn_prop:cn_prop, pgid_prop:pgid_prop}}
-                            ) YIELD value AS class_method_result RETURN class_method_result.found_func AS found_func
-                            \'\'\',
-                            {{cn_prop:cn_prop, cfile_prop:cfile_prop, pgid_prop:pgid_prop, ct_prop:ct_prop, bo_prop:bo_prop}}
-                        ) YIELD value AS m2_func
-                        
-                        // Attempt 3: Method call on other object (khó nhất)
-                        CALL apoc.when(m1.found IS NULL AND m2_func.found_func IS NULL AND ct_prop = \\"method_call_on_object\\",
-                           \'\'\' MATCH (m_other:Method {{name: cn_prop, project_graph_id: pgid_prop}}) RETURN m_other AS found_other LIMIT 1 \'\'\', // Lấy 1 match nếu có nhiều
-                           \'\'\' RETURN null AS found_other \'\'\',
-                           {{cn_prop:cn_prop, pgid_prop:pgid_prop}}
-                        ) YIELD value AS m3_other
-                        RETURN COALESCE(m1.found, m2_func.found_func, m3_other.found_other) AS final_callee
-                        \\",
-                        \\"RETURN m1.found AS final_callee\\", // Nếu m1 đã tìm thấy
-                        {{caller_cid:caller_composite_id, cn_prop:$callee_name_prop, pgid_prop:$project_graph_id_prop,
-                          cfile_prop:$caller_file_path_prop, ct_prop:$call_type_prop,
-                          bo_prop:$base_object_prop, ccn_prop:$caller_class_name_prop}}
-                    ) YIELD value
-                    WITH value.final_callee AS final_callee
-                    WHERE final_callee IS NOT NULL
-                    RETURN final_callee
-                ', // End of apoc.cypher.doIt string
-                $call_params // Params cho apoc.cypher.doIt
-                ) YIELD value AS callee_map // Kết quả từ apoc.cypher.doIt
-                
+                CALL apoc.cypher.doIt({json.dumps(apoc_main_query_string)}, $call_params) YIELD value AS callee_map
                 WITH caller, callee_map.final_callee AS actual_callee
-                WHERE actual_callee IS NOT NULL // Chỉ tạo relationship nếu tìm thấy callee
+                WHERE actual_callee IS NOT NULL
                 MERGE (caller)-[r:CALLS]->(actual_callee)
                 ON CREATE SET r.type = $call_type_prop,
                               r.base_object_name = $base_object_prop,
                               r.call_site_line = $call_site_line_prop,
-                              r.call_count = 1, 
+                              r.call_count = 1,
                               r.first_seen_at = timestamp()
                 ON MATCH SET  r.call_count = coalesce(r.call_count, 0) + 1,
                               r.last_seen_at = timestamp()
-                // Thêm log để debug nếu không tạo được relationship
-                // WITH caller, actual_callee, r
-                // RETURN caller.name as c_name, actual_callee.name as ac_name, r.call_count as count
                 """
-                call_link_queries_batch.append((resolve_and_link_query_apoc, call_params))
+                call_link_queries_batch.append((resolve_and_link_query_apoc, params_for_apoc_call_query))
 
         if call_link_queries_batch:
             logger.debug(f"CKGBuilder: Executing batch of {len(call_link_queries_batch)} CALLS link queries for file {file_path_in_repo}.")
             try:
                 await self._execute_write_queries(call_link_queries_batch)
             except Exception as e_calls:
-                logger.error(f"CKGBuilder: Error executing CALLS link batch for {file_path_in_repo}: {e_calls}", exc_info=True)
-                # Ghi log params để debug
-                for q_idx, (q_str, q_params) in enumerate(call_link_queries_batch):
-                    logger.debug(f"CALLS query {q_idx} params: {q_params}")
+                # Log lỗi nhưng không re-raise để không dừng toàn bộ quá trình build của file
+                logger.error(f"CKGBuilder: Error executing CALLS link batch for {file_path_in_repo}. Some call links might be missing. Error: {e_calls}", exc_info=True)
 
 
         logger.info(f"CKGBuilder: Finished CKG processing for file '{file_path_in_repo}'.")
 
 
     async def build_for_project_from_path(self, repo_local_path: str):
-        # ... (Giữ nguyên logic hàm này từ các phản hồi trước) ...
         logger.info(f"CKGBuilder: Starting CKG build for project '{self.project_graph_id}' from path: {repo_local_path}")
         await self._ensure_project_node()
         source_path_obj = Path(repo_local_path); files_processed_count = 0; files_to_process: List[Tuple[Path, Optional[str]]] = []

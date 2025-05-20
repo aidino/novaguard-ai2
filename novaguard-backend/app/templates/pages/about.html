@@ -1,0 +1,549 @@
+{% extends "layout/base.html" %}
+
+{% block head_extra %}
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {# title is already handled by base.html, but if you want to override specifically for this page, you can #}
+    {# <title>NovaGuard AI - About Us & Market Insights</title> #}
+    {# Tailwind CSS is already in base.html via cdn or static file #}
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            scroll-behavior: smooth;
+        }
+        .chart-container {
+            position: relative;
+            width: 100%;
+            max-width: 600px; 
+            margin-left: auto;
+            margin-right: auto;
+        }
+        .section-title {
+            font-size: 2.25rem; 
+            font-weight: 700;
+            margin-bottom: 1.5rem; 
+            text-align: center;
+        }
+        .sub-section-title {
+            font-size: 1.5rem; 
+            font-weight: 600;
+            margin-bottom: 1rem; 
+            color: #118AB2; /* nv-accent, cerulean-blue */
+        }
+        .card {
+            background-color: white;
+            border-radius: 0.5rem; 
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); 
+            padding: 1.5rem; 
+            margin-bottom: 1.5rem; 
+        }
+        .stat-number {
+            font-size: 3rem; 
+            font-weight: 700;
+            color: #FF6B6B; /* A coral-red like color from your example */
+        }
+        .stat-label {
+            font-size: 1rem; 
+            color: #073B4C; /* A dark-blue like color from your example */
+            margin-top: 0.5rem; 
+        }
+        
+        /* Tailwind is preferred, but keeping these for direct reference to example colors */
+        .text-coral-red { color: #FF6B6B; }
+        .text-turquoise-green { color: #06D6A0; }
+        .text-cerulean-blue { color: #118AB2; } /* Matches nv-accent */
+        .text-dark-blue { color: #073B4C; } /* Matches nv-dark potentially */
+
+
+        .flowchart-step {
+            border: 2px solid #38bdf8; /* nv-accent */
+            padding: 1rem;
+            border-radius: 0.375rem; 
+            text-align: center;
+            background-color: #ffffff;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        .flowchart-arrow {
+            font-size: 2rem;
+            color: #38bdf8; /* nv-accent */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 0.5rem;
+        }
+
+        .timeline {
+            position: relative;
+            max-width: 100%;
+            margin: 0 auto;
+        }
+        .timeline::after {
+            content: '';
+            position: absolute;
+            width: 6px;
+            background-color: #38bdf8; /* nv-accent */
+            top: 0;
+            bottom: 0;
+            left: 50%;
+            margin-left: -3px;
+        }
+        .timeline-container {
+            padding: 10px 40px;
+            position: relative;
+            background-color: inherit;
+            width: 50%;
+        }
+        .timeline-container.left {
+            left: 0;
+        }
+        .timeline-container.right {
+            left: 50%;
+        }
+        .timeline-container::after {
+            content: '';
+            position: absolute;
+            width: 25px;
+            height: 25px;
+            right: -12px; 
+            background-color: white;
+            border: 4px solid #ef4444; /* nv-error, coral-red */
+            top: 15px;
+            border-radius: 50%;
+            z-index: 1;
+        }
+        .timeline-container.right::after {
+            left: -13px; 
+        }
+        .timeline-content {
+            padding: 20px 30px;
+            background-color: white;
+            position: relative;
+            border-radius: 6px;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06);
+        }
+         @media screen and (max-width: 768px) {
+            .timeline::after {
+                left: 31px;
+            }
+            .timeline-container {
+                width: 100%;
+                padding-left: 70px;
+                padding-right: 25px;
+            }
+            .timeline-container.right {
+                left: 0%;
+            }
+            .timeline-container.left::after, .timeline-container.right::after {
+                left: 15px;
+            }
+        }
+    </style>
+{% endblock %}
+
+{% block content %}
+    <header class="bg-nv-med-dark text-white py-16 px-4 text-center">
+        <h1 class="text-5xl font-bold mb-4">NovaGuard AI 2.0</h1>
+        <p class="text-xl max-w-3xl mx-auto text-slate-200">Intelligent and In-depth Code Analysis Platform: Exploring Industry Trends and Meeting Market Needs</p>
+    </header>
+
+    <main class="container mx-auto px-4 py-12">
+
+        <section id="challenge" class="mb-16">
+            <h2 class="section-title text-nv-dark">The Growing Challenge of Software Quality</h2>
+            <div class="max-w-3xl mx-auto text-center mb-8">
+                <p class="text-lg text-gray-700">The software industry is constantly evolving, placing ever-increasing demands on quality, speed, and reliability. Traditional code review methods face many limitations in meeting these challenges.</p>
+            </div>
+            <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div class="card">
+                    <h3 class="sub-section-title text-nv-error">🐞 Complex Bugs Missed</h3>
+                    <p>Traditional tools and processes often struggle to detect deep logical errors, hidden architectural issues, or sophisticated security vulnerabilities.</p>
+                </div>
+                <div class="card">
+                    <h3 class="sub-section-title text-nv-error">⏳ Time-Consuming & Costly</h3>
+                    <p>Manual code reviews by experienced developers consume valuable time, slowing down project progress and increasing development costs.</p>
+                </div>
+                <div class="card">
+                    <h3 class="sub-section-title text-nv-error">📉 Inconsistent Quality</h3>
+                    <p>Review quality depends on the reviewer's experience and focus, leading to inconsistency and the risk of overlooking issues.</p>
+                </div>
+                <div class="card">
+                    <h3 class="sub-section-title text-nv-error">🧱 Accumulated Technical Debt</h3>
+                    <p>Technical debt and "architectural smells" often don't receive proper attention, making maintenance and expansion difficult.</p>
+                </div>
+                <div class="card">
+                    <h3 class="sub-section-title text-nv-error">🎯 Difficulty Maintaining Accuracy</h3>
+                    <p>Maintaining high accuracy and minimizing false positives is a major challenge for code analysis systems.</p>
+                </div>
+                <div class="card">
+                    <h3 class="sub-section-title text-nv-error">💡 Requires Deep Understanding</h3>
+                    <p>Effective analysis requires a deep understanding of the project context, which traditional automated tools often lack.</p>
+                </div>
+            </div>
+        </section>
+
+        <section id="market-demand" class="mb-16">
+            <h2 class="section-title text-nv-dark">Market Demand: Who Needs Better Code Analysis?</h2>
+            <div class="max-w-3xl mx-auto text-center mb-8">
+                <p class="text-lg text-gray-700">The demand for intelligent and effective code analysis tools is increasing from various stakeholders in the software development ecosystem.</p>
+            </div>
+            <div class="grid md:grid-cols-2 gap-8 items-center">
+                <div class="card">
+                    <h3 class="sub-section-title">Key User Segments</h3>
+                    <p class="mb-4">NovaGuard AI is designed to serve a diverse range of users, from development teams to engineering managers, each with unique needs to be addressed.</p>
+                    <ul class="list-disc list-inside space-y-2">
+                        <li><strong>Software Development Teams:</strong> Need to reduce review time, improve overall code quality.</li>
+                        <li><strong>Architects & Tech Leads:</strong> Want to maintain architectural compliance, detect technical debt early.</li>
+                        <li><strong>Engineering/Product Managers:</strong> Need to track code "health", output quality.</li>
+                        <li><strong>Individual Developers:</strong> Desire insightful feedback to improve skills.</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <h3 class="sub-section-title text-center">Demand Ratio (Illustrative)</h3>
+                    <div class="chart-container h-80 md:h-96">
+                        <canvas id="marketDemandChart"></canvas>
+                    </div>
+                    <p class="text-sm text-center mt-2 text-gray-600">Illustrative chart showing the demand ratio from target user groups.</p>
+                </div>
+            </div>
+        </section>
+
+        <section id="solution" class="mb-16 bg-slate-100 py-12 px-4 rounded-lg">
+            <h2 class="section-title text-nv-dark">NovaGuard AI: A New Wave in Smart Code Analysis</h2>
+            <div class="max-w-3xl mx-auto text-center mb-8">
+                <p class="text-lg text-gray-700">NovaGuard AI 2.0 is not just a tool, but an advanced web platform built to deeply understand your project, providing superior analysis and valuable insights.</p>
+            </div>
+            <div class="card">
+                <h3 class="sub-section-title text-center mb-6">NovaGuard AI's Core Analysis Process</h3>
+                <div class="flex flex-col md:flex-row items-center justify-around space-y-4 md:space-y-0 md:space-x-4">
+                    <div class="flowchart-step flex-1">
+                        <span class="text-2xl mb-2">📥</span>
+                        <p class="font-semibold">1. Code Ingestion</p>
+                        <p class="text-sm">Connects to GitHub (and other platforms in the future).</p>
+                    </div>
+                    <div class="flowchart-arrow hidden md:flex">➔</div>
+                    <div class="flowchart-step flex-1 mt-4 md:mt-0">
+                         <span class="text-2xl mb-2">🧠</span>
+                        <p class="font-semibold">2. Context Building</p>
+                        <p class="text-sm">Creates Code Knowledge Graph (CKG) & DynamicProjectContext.</p>
+                    </div>
+                    <div class="flowchart-arrow hidden md:flex">➔</div>
+                     <div class="flowchart-step flex-1 mt-4 md:mt-0">
+                        <span class="text-2xl mb-2">🤖</span>
+                        <p class="font-semibold">3. Analysis by AI Agents</p>
+                        <p class="text-sm">Specialized agents perform in-depth analysis based on context.</p>
+                    </div>
+                    <div class="flowchart-arrow hidden md:flex">➔</div>
+                    <div class="flowchart-step flex-1 mt-4 md:mt-0">
+                        <span class="text-2xl mb-2">📊</span>
+                        <p class="font-semibold">4. Intelligent Reporting</p>
+                        <p class="text-sm">Provides clear, understandable, and actionable insights.</p>
+                    </div>
+                </div>
+                 <p class="text-center mt-6 text-gray-700">This approach allows NovaGuard AI to surpass the limitations of traditional tools, offering a comprehensive understanding of the project.</p>
+            </div>
+        </section>
+
+        <section id="innovations" class="mb-16">
+            <h2 class="section-title text-nv-dark">Key Innovations Meeting Market Trends</h2>
+            <div class="max-w-3xl mx-auto text-center mb-8">
+                 <p class="text-lg text-gray-700">NovaGuard AI integrates advanced technologies and features to directly address the challenges and needs of the modern software development industry.</p>
+            </div>
+            <div class="grid md:grid-cols-2 gap-8 mb-8">
+                <div class="card">
+                    <h3 class="sub-section-title">🔍 Full Project Scan & Code Knowledge Graph (CKG)</h3>
+                    <p>This feature allows building a comprehensive "knowledge map" (CKG) of your project. It not only analyzes code at the individual file level but also understands relationships between modules, data flows, and the overall architecture.</p>
+                    <p class="mt-2"><strong>Market Benefit:</strong> Addresses the need for deep understanding of the entire project's "health," detecting major architectural issues and proactively managing technical debt.</p>
+                </div>
+                <div class="card">
+                    <h3 class="sub-section-title">🚀 Automated & Intelligent Pull Request Review</h3>
+                    <p>Automatically analyzes changes in Pull Requests (PRs), providing quick and accurate feedback. NovaGuard AI incrementally updates the CKG and uses PR context to make sharp judgments about the impact of changes.</p>
+                    <p class="mt-2"><strong>Market Benefit:</strong> Meets the demand for accelerating development cycles (DevOps), reducing review waiting times, and ensuring continuously integrated code quality.</p>
+                </div>
+            </div>
+             <div class="card">
+                <h3 class="sub-section-title text-center">🤖 Specialized AI Agents: Superior Analytical Intelligence</h3>
+                <p class="text-center mb-6">NovaGuard AI employs a team of AI agents, each trained to specialize in a specific type of issue, delivering multi-dimensional and in-depth analysis capabilities that traditional tools struggle to achieve.</p>
+                <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6 text-center">
+                    <div><span class="text-turquoise-green text-3xl">🐞</span><p class="font-semibold mt-1">DeepLogicBugHunterAI</p><p class="text-sm">Detects complex logical errors.</p></div>
+                    <div><span class="text-turquoise-green text-3xl">🏛️</span><p class="font-semibold mt-1">ArchitecturalAnalystAI</p><p class="text-sm">Analyzes design & architecture.</p></div>
+                    <div><span class="text-turquoise-green text-3xl">🛡️</span><p class="font-semibold mt-1">SecuritySentinelAI</p><p class="text-sm">Finds in-depth security vulnerabilities.</p></div>
+                    <div><span class="text-turquoise-green text-3xl">⚡</span><p class="font-semibold mt-1">PerformanceProfilerAI</p><p class="text-sm">Identifies performance bottlenecks.</p></div>
+                </div>
+                <div class="chart-container h-80 md:h-96 max-w-2xl">
+                    <canvas id="aiAgentsEffectivenessChart"></canvas>
+                </div>
+                <p class="text-sm text-center mt-2 text-gray-600">Illustrative chart showing the proportion of issue types detected by AI Agents.</p>
+                <p class="mt-4 text-center"><strong>Market Benefit:</strong> Provides expert-level issue detection, from subtle logical errors to complex security vulnerabilities and hidden architectural problems, significantly enhancing software quality and reliability.</p>
+            </div>
+        </section>
+
+        <section id="technology" class="mb-16 bg-slate-100 py-12 px-4 rounded-lg">
+            <h2 class="section-title text-nv-dark">Pioneering Technology: The Foundation for Innovation</h2>
+            <div class="max-w-3xl mx-auto text-center mb-8">
+                <p class="text-lg text-gray-700">NovaGuard AI leverages leading technologies in AI and data analysis to deliver superior analytical power.</p>
+            </div>
+            <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div class="card text-center">
+                    <p class="text-4xl mb-2">🧠</p>
+                    <h3 class="sub-section-title text-turquoise-green !mb-2">Large Language Models (LLM)</h3>
+                    <p>Utilizes advanced LLMs (Ollama, Gemini, OpenAI) to understand code semantics, infer logic, and provide detailed explanations.</p>
+                </div>
+                <div class="card text-center">
+                    <p class="text-4xl mb-2">🕸️</p>
+                    <h3 class="sub-section-title text-turquoise-green !mb-2">Graph Database (Neo4j)</h3>
+                    <p>Efficiently stores and queries the Code Knowledge Graph (CKG), enabling understanding of complex codebase relationships.</p>
+                </div>
+                <div class="card text-center">
+                    <p class="text-4xl mb-2">🔗</p>
+                    <h3 class="sub-section-title text-turquoise-green !mb-2">LLM Orchestration (LangGraph)</h3>
+                    <p>Flexibly and powerfully coordinates LLM tasks, allowing the construction of complex analysis chains.</p>
+                </div>
+                <div class="card text-center">
+                     <p class="text-4xl mb-2">📜</p>
+                    <h3 class="sub-section-title text-turquoise-green !mb-2">AST Parsing (tree-sitter)</h3>
+                    <p>Accurately parses code to extract structure and code components as input for the CKG.</p>
+                </div>
+                <div class="card text-center">
+                    <p class="text-4xl mb-2">📦</p>
+                    <h3 class="sub-section-title text-turquoise-green !mb-2">Microservices & Scalability</h3>
+                    <p>Highly modular architecture ensures easy scalability and maintenance as demand grows.</p>
+                </div>
+                 <div class="card text-center">
+                    <p class="text-4xl mb-2">🔍</p>
+                    <h3 class="sub-section-title text-turquoise-green !mb-2">Vector Database</h3>
+                    <p>Stores semantic embeddings of code, supporting semantic search and enriching context for analysis.</p>
+                </div>
+            </div>
+        </section>
+
+        <section id="responsiveness" class="mb-16">
+            <h2 class="section-title text-nv-dark">Global Needs & Flexible Customization</h2>
+             <div class="max-w-3xl mx-auto text-center mb-8">
+                <p class="text-lg text-gray-700">NovaGuard AI is designed with flexibility to serve diverse markets and allow users to customize according to specific needs.</p>
+            </div>
+            <div class="grid md:grid-cols-2 gap-8">
+                <div class="card">
+                    <h3 class="sub-section-title">🌐 Multi-language Support</h3>
+                    <p>NovaGuard AI not only analyzes code written in multiple programming languages but also provides result reports in various user languages, breaking down language barriers and expanding global accessibility.</p>
+                    <ul class="mt-4 space-y-2">
+                        <li class="flex items-center"><span class="text-2xl mr-2">🇬🇧</span> Reports in English</li>
+                        <li class="flex items-center"><span class="text-2xl mr-2">🇻🇳</span> Reports in Vietnamese</li>
+                        <li class="flex items-center"><span class="text-2xl mr-2">🇰🇷</span> Reports in Korean</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <h3 class="sub-section-title">⚙️ LLM Provider Options</h3>
+                    <p>Users have full control to choose the Large Language Model (LLM) provider that best suits their project's performance, cost, and security requirements.</p>
+                     <ul class="mt-4 space-y-2">
+                        <li class="flex items-center"><span class="text-xl mr-2 text-nv-accent">●</span> Ollama (Local execution, maximum control)</li>
+                        <li class="flex items-center"><span class="text-xl mr-2 text-nv-accent">●</span> OpenAI (Powerful GPT models)</li>
+                        <li class="flex items-center"><span class="text-xl mr-2 text-nv-accent">●</span> Google Gemini (Advanced AI technology)</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <section id="future" class="mb-16 bg-slate-100 py-12 px-4 rounded-lg">
+            <h2 class="section-title text-nv-dark">The Future Ahead: Development Roadmap & Vision</h2>
+            <div class="max-w-3xl mx-auto text-center mb-8">
+                <p class="text-lg text-gray-700">NovaGuard AI is committed to continuous improvement and expansion, with a clear development roadmap to meet new market trends and needs.</p>
+            </div>
+            <div class="timeline">
+                <div class="timeline-container left">
+                    <div class="timeline-content bg-nv-success text-white"> {# Using nv-success for a distinct timeline color #}
+                        <h3 class="text-xl font-semibold">MVP 1</h3>
+                        <p class="text-sm">Basic platform & Smart PR Review. Focus on core processing flow and key agents.</p>
+                    </div>
+                </div>
+                <div class="timeline-container right">
+                    <div class="timeline-content bg-nv-warning text-nv-dark"> {# Using nv-warning #}
+                        <h3 class="text-xl font-semibold">MVP 2</h3>
+                        <p class="text-sm">Full Project Scan & Foundational CKG. Expand comprehensive analysis capabilities and CKG construction.</p>
+                    </div>
+                </div>
+                <div class="timeline-container left">
+                    <div class="timeline-content bg-nv-error text-white"> {# Using nv-error #}
+                        <h3 class="text-xl font-semibold">Next Version</h3>
+                        <p class="text-sm">Refine CKG, add/upgrade agents, improve UX/UI, advanced features (technical debt tracking, knowledge base), multi-platform support (GitLab, Bitbucket).</p>
+                    </div>
+                </div>
+                <div class="timeline-container right">
+                    <div class="timeline-content bg-nv-accent text-white"> {# Using nv-accent #}
+                        <h3 class="text-xl font-semibold">Long-Term Vision</h3>
+                        <p class="text-sm">Offer On-Premise/Self-Hosted options for large enterprises, deeper integrations, and become a comprehensive code analysis ecosystem.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="impact" class="mb-16">
+            <h2 class="section-title text-nv-dark">The Impact of NovaGuard AI: Why This Matters</h2>
+            <div class="max-w-3xl mx-auto text-center mb-8">
+                <p class="text-lg text-gray-700">By addressing core challenges and meeting market demands, NovaGuard AI brings tangible and strategic benefits to software development organizations.</p>
+            </div>
+            <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-8 text-center">
+                <div class="card">
+                    <p class="stat-number text-nv-error">40%</p>
+                    <p class="stat-label">Reduction in critical post-release bugs (Estimated)</p>
+                </div>
+                <div class="card">
+                    <p class="stat-number text-nv-error">25%</p>
+                    <p class="stat-label">Savings in senior developer manual review time (Estimated)</p>
+                </div>
+                <div class="card">
+                    <p class="stat-number text-nv-error">60%</p>
+                    <p class="stat-label">Increased codebase understanding via CKG (Estimated)</p>
+                </div>
+            </div>
+            <div class="mt-10 max-w-4xl mx-auto">
+                 <h3 class="sub-section-title text-center">Core Business Benefits</h3>
+                 <ul class="list-disc list-inside space-y-3 text-lg text-gray-700 p-6 bg-white rounded-lg shadow-md">
+                    <li><strong>Superior Code Quality Enhancement:</strong> Proactively identify and fix more bugs, security vulnerabilities, and design issues before they impact users.</li>
+                    <li><strong>Increased Team Development Velocity:</strong> Automate significant portions of the code review process, freeing up senior developers for more complex tasks.</li>
+                    <li><strong>Deep, Actionable Insights Provided:</strong> Go beyond surface-level checks to truly understand code structure, dependencies, and potential risks.</li>
+                    <li><strong>Minimized Development Risks:</strong> Reduce the likelihood of deploying faulty or vulnerable code, leading to more stable releases.</li>
+                    <li><strong>Enhanced Code Maintainability & Scalability:</strong> Build software that is easier to understand, modify, and extend over time.</li>
+                    <li><strong>Empowered Developers:</strong> Provide your team with a powerful learning tool offering specific, contextual feedback for skill improvement.</li>
+                 </ul>
+            </div>
+        </section>
+    </main>
+
+    {# Footer is inherited from base.html, no need to repeat unless specific override #}
+
+    <script>
+        // Wrapped Chart.js initialization in window.onload to ensure DOM is ready
+        window.onload = function() {
+            function wrapLabels(label, maxWidth) {
+                const words = label.split(' ');
+                let currentLine = '';
+                const lines = [];
+                words.forEach(word => {
+                    if ((currentLine + ' ' + word).trim().length > maxWidth && currentLine.length > 0) {
+                        lines.push(currentLine);
+                        currentLine = word;
+                    } else {
+                        currentLine = (currentLine + ' ' + word).trim();
+                    }
+                });
+                if (currentLine.length > 0) {
+                    lines.push(currentLine);
+                }
+                return lines.length > 0 ? lines : [label]; 
+            }
+
+            const defaultTooltipCallbacks = {
+                title: function(tooltipItems) {
+                    const item = tooltipItems[0];
+                    if (!item) return '';
+                    let label = item.chart.data.labels[item.dataIndex];
+                    if (Array.isArray(label)) {
+                        return label.join(' ');
+                    } else {
+                        return label;
+                    }
+                }
+            };
+
+            const marketDemandCtx = document.getElementById('marketDemandChart');
+            if (marketDemandCtx) {
+                new Chart(marketDemandCtx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: [
+                            wrapLabels('Software Development Teams', 16),
+                            wrapLabels('Architects & Tech Leads', 16),
+                            wrapLabels('Engineering/Product Managers', 16),
+                            wrapLabels('Individual Developers', 16)
+                        ],
+                        datasets: [{
+                            label: 'Market Demand',
+                            data: [40, 25, 20, 15], 
+                            backgroundColor: [
+                                '#FF6B6B', // coral-red (nv-error like)
+                                '#FFD166', // sunny-yellow (nv-warning like)
+                                '#06D6A0', // turquoise-green (nv-success like)
+                                '#38bdf8'  // nv-accent (cerulean-blue)
+                            ],
+                            borderColor: '#FFFFFF',
+                            borderWidth: 2
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                position: 'bottom',
+                                labels: {
+                                    color: '#073B4C', // nv-dark (dark-blue)
+                                    font: { size: 12 },
+                                    padding: 25 
+                                }
+                            },
+                            tooltip: {
+                                callbacks: defaultTooltipCallbacks
+                            }
+                        }
+                    }
+                });
+            }
+
+            const aiAgentsCtx = document.getElementById('aiAgentsEffectivenessChart');
+            if (aiAgentsCtx) {
+                new Chart(aiAgentsCtx, {
+                    type: 'bar',
+                    data: {
+                        labels: [
+                            wrapLabels('Complex Logical Errors', 16),
+                            wrapLabels('Architectural & Design Flaws', 16),
+                            wrapLabels('Security Vulnerabilities', 16),
+                            wrapLabels('Performance Issues', 16),
+                            wrapLabels('Style & Conventions', 16)
+                        ],
+                        datasets: [{
+                            label: 'Proportion of Issues Detected (%)',
+                            data: [35, 25, 20, 15, 5], 
+                            backgroundColor: [
+                                '#ef4444', // nv-error
+                                '#f59e0b', // nv-warning
+                                '#22c55e', // nv-success
+                                '#38bdf8', // nv-accent
+                                '#334155'  // nv-med-dark
+                            ],
+                            borderRadius: 4,
+                            barPercentage: 0.7,
+                            categoryPercentage: 0.7
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        indexAxis: 'y', 
+                         scales: {
+                            x: {
+                                beginAtZero: true,
+                                grid: { display: false },
+                                ticks: { color: '#1e293b' } // nv-dark
+                            },
+                            y: {
+                                grid: { color: '#e5e7eb' }, // gray-200
+                                ticks: { color: '#1e293b', font: {size: 10} } // nv-dark
+                            }
+                        },
+                        plugins: {
+                            legend: {
+                                 display: false
+                            },
+                            tooltip: {
+                                callbacks: defaultTooltipCallbacks
+                            }
+                        }
+                    }
+                });
+            }
+        };
+    </script>
+{% endblock %}

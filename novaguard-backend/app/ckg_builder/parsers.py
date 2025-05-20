@@ -147,7 +147,6 @@ class PythonParser(BaseCodeParser):
               ) @direct_global_assignment
             ]
         """
-        # Bỏ query "calls" tạm thời để kiểm tra
     }
 
     def __init__(self):
@@ -169,13 +168,12 @@ class PythonParser(BaseCodeParser):
             logger.info("PythonParser: All defined queries compiled successfully.")
 
     def _get_query(self, query_name: str) -> Optional[Query]:
-        # (Giữ nguyên)
         query = self.queries.get(query_name)
         if not query:
             logger.debug(f"PythonParser: Query '{query_name}' is not available (likely failed compilation).")
         return query
-
-    # (Giữ nguyên _parse_decorators, _parse_parameters_node)
+    
+    
     def _parse_decorators(self, node_with_decorators: Node) -> List[str]:
         decorators = []
         for child in node_with_decorators.children:
@@ -186,7 +184,7 @@ class PythonParser(BaseCodeParser):
                     if decorator_expr_node.type == "call":
                         func_node = decorator_expr_node.child_by_field_name("function")
                         if func_node:
-                             decorator_text = self._get_node_text(func_node)
+                            decorator_text = self._get_node_text(func_node)
                     if decorator_text:
                         decorators.append(decorator_text)
         return decorators
@@ -228,7 +226,7 @@ class PythonParser(BaseCodeParser):
                     param_name = "**" + self._get_node_text(id_node)
                     node_for_lines = id_node
             elif child.type in ['(', ')', ',','keyword_separator', 'positional_separator']:
-                 continue
+                continue
 
 
             if param_name:
@@ -243,44 +241,109 @@ class PythonParser(BaseCodeParser):
 
 
     def _extract_body_details(self, body_node: Optional[Node], owner_function: ExtractedFunction, result: ParsedFileResult):
-        if not body_node: return
-        
-        # Tạm thời vô hiệu hóa trích xuất calls để kiểm tra lỗi "Invalid syntax at offset 96"
-        # call_query_str = "(call) @call_node" 
-        # try:
-        #     call_query = self.lang_object.query(call_query_str)
-        #     for match_tuple in call_query.matches(body_node): # Sửa lại cách duyệt match
-        #         if not match_tuple or not match_tuple[1]: continue
-        #         call_node = match_tuple[1].get("call_node") # Lấy node từ capture dict
-        #         if call_node:
-        #             func_part_node = call_node.child_by_field_name("function")
-        #             if func_part_node:
-        #                 called_name = self._get_node_text(func_part_node)
-        #                 if called_name:
-        #                     base_object_name_str = None
-        #                     call_type = "unknown_call"
-        #                     if func_part_node.type == "identifier":
-        #                         call_type = "direct_function_call"
-        #                         # Heuristic for constructor calls
-        #                         if any(c.name == called_name for c in result.classes): # Ensure result is passed or accessible
-        #                              call_type = "constructor_call"
-        #                     elif func_part_node.type == "attribute":
-        #                         obj_node = func_part_node.child_by_field_name("object")
-        #                         base_object_name_str = self._get_node_text(obj_node)
-        #                         if base_object_name_str == "self": call_type = "instance_method_call"
-        #                         else: call_type = "method_call_on_object"
-                            
-        #                     owner_function.calls.add((
-        #                         called_name, 
-        #                         base_object_name_str, 
-        #                         call_type, 
-        #                         self._get_line_number(call_node)
-        #                     ))
-        # except Exception as e:
-        #     logger.warning(f"PythonParser: Failed to compile or run basic call query in '{owner_function.name}' of {result.file_path}: {e}")
-        #     # Không log exc_info ở đây nữa vì đã log ở __init__ nếu query lỗi
-        logger.debug(f"PythonParser: Call extraction temporarily disabled in _extract_body_details for stability testing.")
+        if not body_node:
+            return
 
+        # 1. Trích xuất Local Variables (assignments đơn giản) - giữ lại logic cũ
+        assignment_query_str = "(assignment left: (identifier) @var_name)" # Query này an toàn
+        try:
+            assignment_query = self.lang_object.query(assignment_query_str)
+            for match_tuple in assignment_query.matches(body_node):
+                if not match_tuple or not match_tuple[1]: continue
+                var_name_node = match_tuple[1].get("var_name")
+                if var_name_node:
+                    var_name_text = self._get_node_text(var_name_node)
+                    if var_name_text and not any(p.name == var_name_text for p in owner_function.parameters):
+                        if not any(lv.name == var_name_text for lv in owner_function.local_variables):
+                            owner_function.local_variables.append(ExtractedVariable(
+                                name=var_name_text,
+                                start_line=self._get_line_number(var_name_node),
+                                end_line=self._get_end_line_number(var_name_node),
+                                scope_name=owner_function.name,
+                                scope_type="local_variable"
+                            ))
+        except Exception as e:
+            logger.warning(f"PythonParser: Error querying basic assignments in '{owner_function.name}' of {result.file_path}: {e}")
+
+
+        # 2. Trích xuất Function Calls
+        # Sử dụng (call_expression) vì đây là tên node chuẩn hơn, (call) là alias trong 1 số grammar.
+        # Tuy nhiên, để an toàn hơn, chúng ta có thể thử cả hai hoặc kiểm tra grammar.
+        # Với tree-sitter-python, (call) là node chính cho một function call expression.
+        call_query_str = "(call) @call_node" 
+        call_query: Optional[Query] = None
+        try:
+            call_query = self.lang_object.query(call_query_str)
+            logger.debug(f"PythonParser: Call query for '{owner_function.name}' compiled successfully.")
+        except Exception as e:
+            logger.warning(f"PythonParser: CRITICAL - Failed to compile CALL query ('{call_query_str}') in '{owner_function.name}' of {result.file_path}: {type(e).__name__} - {e}. Call extraction will be skipped for this function.")
+            # Không log exc_info ở đây nữa để tránh quá nhiều log nếu lỗi này lặp lại
+            # exc_info=True
+            return # Thoát khỏi _extract_body_details nếu query call không compile được
+
+        if call_query and body_node: # Đảm bảo body_node cũng tồn tại
+            processed_call_ids = set() # Để tránh xử lý trùng lặp nếu query phức tạp hơn sau này
+            try:
+                for match_tuple in call_query.matches(body_node): # Duyệt các match
+                    if not match_tuple or not match_tuple[1]: continue
+                    
+                    call_node = match_tuple[1].get("call_node")
+                    if not call_node or call_node.id in processed_call_ids:
+                        continue
+                    processed_call_ids.add(call_node.id)
+
+                    function_part_node = call_node.child_by_field_name("function")
+                    if not function_part_node:
+                        continue
+
+                    called_name_str: Optional[str] = None
+                    base_object_name_str: Optional[str] = None
+                    call_type = "unknown_call"
+                    call_site_line = self._get_line_number(call_node)
+                    
+                    # Phân tích phần "function" của call_node
+                    if function_part_node.type == "identifier":
+                        called_name_str = self._get_node_text(function_part_node)
+                        call_type = "direct_function_call"
+                        # Heuristic for constructor calls (kiểm tra trong danh sách class đã parse của file)
+                        if called_name_str and any(c.name == called_name_str for c in result.classes):
+                            call_type = "constructor_call"
+                    elif function_part_node.type == "attribute": # obj.method or Class.method
+                        # child_by_field_name an toàn hơn child(index)
+                        obj_node = function_part_node.child_by_field_name("object")
+                        attr_node = function_part_node.child_by_field_name("attribute")
+                        
+                        called_name_str = self._get_node_text(attr_node) # Tên method
+                        base_object_name_str = self._get_node_text(obj_node) # Tên object/class
+
+                        if base_object_name_str == "self":
+                            call_type = "instance_method_call"
+                        elif owner_function.class_name and base_object_name_str == owner_function.class_name:
+                             call_type = "class_method_call_on_own_class"
+                        # Kiểm tra xem có phải là gọi method của class khác đã biết không
+                        elif base_object_name_str and any(c.name == base_object_name_str for c in result.classes):
+                            call_type = "class_method_call_on_other_class"
+                        else:
+                            call_type = "method_call_on_object"
+                    # Thêm các trường hợp khác nếu cần: subscript (e.g., my_dict["func"]())
+                    elif function_part_node.type == "subscript":
+                        # Lấy toàn bộ text của subscript làm "tên hàm được gọi"
+                        called_name_str = self._get_node_text(function_part_node)
+                        # Lấy đối tượng bị subscript
+                        obj_node = function_part_node.child_by_field_name("object")
+                        if obj_node : base_object_name_str = self._get_node_text(obj_node)
+                        call_type = "subscripted_call"
+                    else:
+                        # Trường hợp phức tạp khác, ví dụ (lambda x:x)()
+                        called_name_str = self._get_node_text(function_part_node) # Lấy text của toàn bộ phần function
+                        call_type = f"complex_call_{function_part_node.type}"
+
+
+                    if called_name_str:
+                        call_tuple = (called_name_str, base_object_name_str, call_type, call_site_line)
+                        owner_function.calls.add(call_tuple)
+            except Exception as e_match:
+                logger.warning(f"PythonParser: Error processing call matches in '{owner_function.name}' of {result.file_path}: {e_match}", exc_info=True)
 
     def _parse_function_node(self, func_node: Node, result: ParsedFileResult, class_name: Optional[str] = None) -> Optional[ExtractedFunction]:
         # (Giữ nguyên logic, đảm bảo gọi _extract_body_details)
@@ -394,8 +457,8 @@ class PythonParser(BaseCodeParser):
                         if child.type == ".":
                             relative_level += 1
                         elif child.field_name == "name" and (child.type == "identifier" or child.type == "dotted_name"):
-                             part = self._get_node_text(child)
-                             if part: path_parts.append(part)
+                            part = self._get_node_text(child)
+                            if part: path_parts.append(part)
                     
                     if path_parts:
                         module_path_text = ("." * relative_level) + ".".join(path_parts)
@@ -422,7 +485,7 @@ class PythonParser(BaseCodeParser):
                                     imported_items_list.append((orig_name, self._get_node_text(alias_node)))
             
             if module_path_text is not None and (imported_items_list or import_type == "from_wildcard"):
-                 return ExtractedImport(
+                return ExtractedImport(
                     import_type=import_type, start_line=start_line, end_line=end_line,
                     module_path=module_path_text, imported_names=imported_items_list,
                     relative_level=relative_level # relative_level đã được tính ở trên
@@ -437,15 +500,15 @@ class PythonParser(BaseCodeParser):
 
     def _extract_entities(self, root_node: Node, result: ParsedFileResult):
         # 1. Trích xuất Imports
-        imports_query = self._get_query("imports_query") # Đổi tên query cho rõ
+        imports_query = self._get_query("imports_query")
         if imports_query:
             try:
-                # Sử dụng .matches() vì query này có capture name @import_node
+                # Sửa lại cách duyệt `matches` cho query đơn giản hơn
                 for match_tuple in imports_query.matches(root_node):
                     if not match_tuple or not match_tuple[1]: continue
-                    node = match_tuple[1].get("import_node") # Lấy node từ capture dict
+                    node = match_tuple[1].get("import_node") # Lấy node từ capture name
                     
-                    if node: # Đảm bảo node không phải None
+                    if node:
                         extracted_import = None
                         if node.type == "import_statement":
                             extracted_import = self._parse_import_statement_node(node, result)
@@ -457,31 +520,24 @@ class PythonParser(BaseCodeParser):
             except Exception as e:
                 logger.error(f"PythonParser: Error during import extraction in {result.file_path}: {e}", exc_info=True)
 
-        # 2. Trích xuất Classes, Global Functions, và Global Variables (đơn giản)
+        # 2. Trích xuất Classes, Global Functions, và Global Variables
         definitions_query = self._get_query("definitions_query")
         if definitions_query:
             try:
-                # Sử dụng .matches() cho query này
                 for match_tuple in definitions_query.matches(root_node):
                     if not match_tuple or not match_tuple[1]: continue
 
                     node = match_tuple[1].get("definition_node") or \
-                           match_tuple[1].get("global_assignment_in_expr_stmt") or \
-                           match_tuple[1].get("direct_global_assignment")
+                        match_tuple[1].get("global_assignment_in_expr_stmt") or \
+                        match_tuple[1].get("direct_global_assignment")
 
                     if not node: continue
-
-                    # Chỉ xử lý các node con trực tiếp của module (hoặc block của module)
-                    # để tránh lấy nhầm các định nghĩa lồng nhau vào global scope.
-                    parent = node.parent
-                    is_top_level = parent and (parent.type == "module" or (parent.type == "block" and parent.parent and parent.parent.type == "module"))
                     
-                    if not is_top_level:
-                        # Nếu là function_definition hoặc class_definition nhưng không phải top-level,
-                        # nó sẽ được xử lý bên trong _parse_class_node (cho methods)
-                        # hoặc _parse_function_node (cho nested functions, hiện tại chưa hỗ trợ sâu)
-                        continue
-
+                    parent = node.parent
+                    is_top_level = parent and (parent.type == "module" or 
+                                            (parent.type == "block" and parent.parent and parent.parent.type == "module"))
+                    
+                    if not is_top_level: continue
 
                     if node.type == "class_definition":
                         cls = self._parse_class_node(node, result)
@@ -490,15 +546,20 @@ class PythonParser(BaseCodeParser):
                         func = self._parse_function_node(node, result, class_name=None)
                         if func: result.functions.append(func)
                     elif node.type == "expression_statement" or node.type == "assignment":
-                        # Logic trích xuất global variable đơn giản
                         var_name_node = None
-                        if node.type == "expression_statement": # (expression_statement (assignment left: (identifier)))
-                            assignment_in_expr = node.child(0)
-                            if assignment_in_expr and assignment_in_expr.type == "assignment":
-                                var_name_node = assignment_in_expr.child_by_field_name("left")
-                        elif node.type == "assignment": # (assignment left: (identifier))
-                            var_name_node = node.child_by_field_name("left")
+                        actual_assignment_node = None
+
+                        if node.type == "expression_statement":
+                            # Expecting (expression_statement (assignment left: (identifier)))
+                            first_child = node.child(0)
+                            if first_child and first_child.type == "assignment":
+                                actual_assignment_node = first_child
+                        elif node.type == "assignment":
+                            actual_assignment_node = node
                         
+                        if actual_assignment_node:
+                            var_name_node = actual_assignment_node.child_by_field_name("left")
+
                         if var_name_node and var_name_node.type == "identifier":
                             var_name = self._get_node_text(var_name_node)
                             if var_name and not any(gv.name == var_name for gv in result.global_variables):
@@ -510,17 +571,17 @@ class PythonParser(BaseCodeParser):
                                     scope_type="global_variable"
                                 ))
             except Exception as e:
-                logger.error(f"PythonParser: Error during top-level entity (class/func/var) extraction in {result.file_path}: {e}", exc_info=True)
+                logger.error(f"PythonParser: Error during top-level entity extraction in {result.file_path}: {e}", exc_info=True)
         
         logger.info(
-            f"PythonParser (Simplified AST Traversal V2) Extracted from {result.file_path}: "
+            f"PythonParser (Simplified AST Traversal V3 - Calls disabled) Extracted from {result.file_path}: "
             f"{len(result.imports)} imports, "
             f"{len(result.classes)} classes ({sum(len(c.methods) for c in result.classes)} methods), "
             f"{len(result.functions)} global functions, "
             f"{len(result.global_variables)} global variables."
         )
+        
 
-# (Giữ nguyên get_code_parser và _parsers_cache)
 _parsers_cache: Dict[str, BaseCodeParser] = {}
 def get_code_parser(language: str) -> Optional[BaseCodeParser]:
     language_key = language.lower().strip()

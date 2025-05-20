@@ -152,6 +152,17 @@ async def serve_home_page(request: Request, current_user: Optional[auth_schemas.
         "current_year": datetime.now().year
     })
 
+@ui_pages_router.get("/about", response_class=HTMLResponse, name="ui_about_get")
+async def serve_about_page(request: Request, current_user: Optional[auth_schemas.UserPublic] = Depends(get_current_ui_user)):
+    logger.info(f"Serving About page UI. User: {current_user.email if current_user else 'Guest'}")
+    # The About page does not require specific data beyond what base.html might need (like current_user for nav)
+    return templates.TemplateResponse("pages/about.html", {
+        "request": request,
+        "page_title": "About NovaGuard AI", # Specific title for this page
+        "current_user": current_user,
+        "current_year": datetime.now().year
+    })
+
 @ui_pages_router.get("/dashboard", response_class=HTMLResponse, name="ui_dashboard_get")
 async def serve_dashboard_page_ui(
     request: Request,
