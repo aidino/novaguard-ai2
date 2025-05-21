@@ -32,7 +32,7 @@ class CKGBuilder:
         if not queries_with_params:
             return
         driver = await self._get_driver()
-        db_name = getattr(driver, 'database', None) or getattr(driver, '_database', 'neo4j')
+        db_name = getattr(driver, '_database', 'neo4j')
 
         async with driver.session(database=db_name) as session:
             tx = None
@@ -44,15 +44,23 @@ class CKGBuilder:
                     current_query_for_log = query
                     current_params_for_log = params
                     if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug(f"CKG Executing Cypher: {query[:300]}... with params: {json.dumps(params, indent=2) if params else '{}'}")
+                        try:
+                            params_json = json.dumps(params, indent=2, default=str)
+                        except TypeError:
+                            params_json = str(params)
+                        logger.debug(f"CKG Executing Cypher: {query[:300]}... with params: {params_json}")
                     await tx.run(query, params)
                 await tx.commit()
                 tx = None
             except Exception as e:
+                try:
+                    params_json_err = json.dumps(current_params_for_log, indent=2, default=str)
+                except TypeError:
+                    params_json_err = str(current_params_for_log)
                 logger.error(
                     f"CKGBuilder: Error running Cypher batch. "
                     f"Failed Query (approx): '{str(current_query_for_log)[:500]}...'. "
-                    f"Params for failed query: {json.dumps(current_params_for_log, indent=2) if current_params_for_log else '{}'}. Error: {e}",
+                    f"Params for failed query: {params_json_err}. Error: {e}",
                     exc_info=True
                 )
                 if tx:
@@ -66,7 +74,7 @@ class CKGBuilder:
     async def _execute_write_queries_with_results(self, queries_with_params: List[Tuple[str, Dict[str, Any]]]):
         if not queries_with_params: return []
         driver = await self._get_driver()
-        db_name = getattr(driver, 'database', None) or getattr(driver, '_database', 'neo4j')
+        db_name = getattr(driver, '_database', 'neo4j')
         all_results = []
         async with driver.session(database=db_name) as session:
             tx = None
@@ -78,7 +86,11 @@ class CKGBuilder:
                     current_query_for_log = query
                     current_params_for_log = params
                     if logger.isEnabledFor(logging.DEBUG):
-                         logger.debug(f"CKG Executing Cypher (with results): {query[:300]}... with params: {json.dumps(params, indent=2) if params else '{}'}")
+                        try:
+                            params_json = json.dumps(params, indent=2, default=str)
+                        except TypeError:
+                            params_json = str(params)
+                        logger.debug(f"CKG Executing Cypher (with results): {query[:300]}... with params: {params_json}")
                     result_cursor = await tx.run(query, params)
                     records = [record.data() async for record in result_cursor]
                     await result_cursor.consume()
@@ -86,15 +98,20 @@ class CKGBuilder:
                 await tx.commit()
                 tx = None
             except Exception as e:
+                try:
+                    params_json_err = json.dumps(current_params_for_log, indent=2, default=str)
+                except TypeError:
+                    params_json_err = str(current_params_for_log)
                 logger.error(
                     f"CKGBuilder: Error running Cypher batch (with results). "
                     f"Failed Query (approx): '{str(current_query_for_log)[:500]}...'. "
-                    f"Params for failed query: {json.dumps(current_params_for_log, indent=2) if current_params_for_log else '{}'}. Error: {e}",
+                    f"Params for failed query: {params_json_err}. Error: {e}",
                     exc_info=True
                 )
                 if tx: await tx.rollback()
                 raise
         return all_results
+
 
     async def _ensure_project_node(self):
         query = """
@@ -123,7 +140,7 @@ class CKGBuilder:
         query = """
         MATCH (file_node:File {composite_id: $file_composite_id})
         OPTIONAL MATCH (entity)-[:DEFINED_IN]->(file_node)
-        WHERE any(label IN labels(entity) WHERE label IN ['Class', 'Function'])
+        WHERE any(label IN labels(entity) WHERE label IN ['Class', 'Function', 'Method'])
         OPTIONAL MATCH (var_global:Variable)-[:DEFINED_IN_FILE]->(file_node)
         OPTIONAL MATCH (entity)-[:HAS_PARAMETER|DECLARES_VARIABLE|DECLARES_ATTRIBUTE]->(var_child:Variable)
         OPTIONAL MATCH (dec:Decorator {file_path: $file_path_prop, project_graph_id: $project_graph_id_prop})
@@ -160,27 +177,30 @@ class CKGBuilder:
         owner_node_label: Optional[str],
         relationship_type_from_owner: Optional[str]
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
-
         scope_owner_identifier = var_data.scope_name if var_data.scope_name and var_data.scope_name.strip() else "unknown_scope"
         var_name_safe = var_data.name if var_data.name and var_data.name.strip() else "unknown_variable"
 
-        var_composite_id = f"{self.project_graph_id}:{file_path_in_repo}:{scope_owner_identifier}:{var_name_safe}:{var_data.start_line}"
+        if var_data.scope_type == "global_variable":
+            var_composite_id = f"{self.project_graph_id}:{file_path_in_repo}:GLOBAL:{var_name_safe}:{var_data.start_line}"
+        elif var_data.scope_type == "class_attribute" and owner_composite_id:
+            var_composite_id = f"{self.project_graph_id}:{file_path_in_repo}:{scope_owner_identifier}:{var_name_safe}:{var_data.start_line}"
+        elif owner_composite_id:
+             var_composite_id = f"{self.project_graph_id}:{file_path_in_repo}:{scope_owner_identifier}:{var_name_safe}:{var_data.start_line}"
+        else:
+            logger.error(f"Cannot determine composite_id for variable {var_name_safe} with scope {var_data.scope_type}")
+            return None
 
         var_props = {
-            "name": var_name_safe,
-            "file_path": file_path_in_repo,
-            "start_line": var_data.start_line,
-            "end_line": var_data.end_line,
-            "scope_name": scope_owner_identifier,
-            "scope_type": var_data.scope_type or "unknown",
-            "is_parameter": var_data.is_parameter,
-            "project_graph_id": self.project_graph_id,
+            "name": var_name_safe, "file_path": file_path_in_repo,
+            "start_line": var_data.start_line, "end_line": var_data.end_line,
+            "scope_name": scope_owner_identifier, "scope_type": var_data.scope_type or "unknown",
+            "is_parameter": var_data.is_parameter, "project_graph_id": self.project_graph_id,
             "composite_id": var_composite_id
         }
         if var_data.var_type is not None and var_data.var_type.strip():
             var_props["var_type_hint"] = var_data.var_type.strip()
 
-        on_match_set_parts = ["v.end_line = $var_props.end_line"]
+        on_match_set_parts = ["v.end_line = $var_props.end_line", "v.scope_name = $var_props.scope_name", "v.scope_type = $var_props.scope_type"]
         if "var_type_hint" in var_props:
              on_match_set_parts.append("v.var_type_hint = $var_props.var_type_hint")
         on_match_set_parts.append("v.ckg_updated_at = timestamp()")
@@ -221,27 +241,23 @@ class CKGBuilder:
         logger.warning(f"CKGBuilder: Could not determine Cypher for variable: {var_data.name} in scope {var_data.scope_name} (type: {var_data.scope_type})")
         return None
 
+
     async def process_file_for_ckg(self, file_path_in_repo: str, file_content: str, language: Optional[str]):
         logger.info(f"CKGBuilder: Starting CKG processing for file '{file_path_in_repo}' (lang: {language}), project: '{self.project_graph_id}'.")
         if not language:
             logger.debug(f"CKGBuilder: Language not specified for file {file_path_in_repo}, skipping CKG.")
             return
-
         parser = get_code_parser(language)
         if not parser:
             logger.warning(f"CKGBuilder: No parser for lang '{language}' (file: {file_path_in_repo}). Skipping CKG.")
             return
-
         parsed_data: Optional[ParsedFileResult] = parser.parse(file_content, file_path_in_repo)
-
         if not parsed_data:
             logger.error(f"CKGBuilder: Failed to parse file {file_path_in_repo} for CKG. Parser returned None.")
             return
 
-        # ========================================================================
-        # ĐỊNH NGHĨA CÁC CHUỖI CYPHER CON CHO APOC Ở ĐÂY (NGOÀI VÒNG LẶP)
-        # ========================================================================
-        sub_query_attempt1_true = """
+        # --- ĐỊNH NGHĨA LẠI CÁC CHUỖI CYPHER CON CHO APOC (DÙNG {} THAY VÌ {{}} BÊN TRONG) ---
+        sub_query_attempt1_true_cypher = """
             MATCH (caller_cls:Class {name: $ccn_prop, project_graph_id: $pgid_prop})
             OPTIONAL MATCH (callee_direct:Method {name: $cn_prop, class_name: $ccn_prop, project_graph_id: $pgid_prop})
             WHERE (callee_direct)-[:DEFINED_IN_CLASS]->(caller_cls)
@@ -251,88 +267,94 @@ class CKGBuilder:
             WHERE (callee_super)-[:DEFINED_IN_CLASS]->(superclass) AND callee_direct IS NULL
             RETURN COALESCE(callee_direct, callee_super) AS found
         """
-        sub_query_attempt1_false = "RETURN null AS found"
+        sub_query_attempt1_false_cypher = "RETURN null AS found"
 
-        # SỬA LỖI: Định nghĩa sub_query_attempt1 ở đây
-        sub_query_attempt1 = f"""
-            CALL apoc.when($ct_prop STARTS WITH "instance" OR $ct_prop STARTS WITH "class_method_call_on_own_class",
-                {json.dumps(sub_query_attempt1_true)},
-                {json.dumps(sub_query_attempt1_false)},
-                {{ccn_prop: $ccn_prop, cn_prop: $cn_prop, pgid_prop: $pgid_prop}}
+        sub_query_attempt1_for_doIt = f"""
+            CALL apoc.when(
+                $ct_prop STARTS WITH "instance" OR $ct_prop STARTS WITH "class_method_call_on_own_class",
+                {json.dumps(sub_query_attempt1_true_cypher)},
+                {json.dumps(sub_query_attempt1_false_cypher)},
+                {{ccn_prop: $ccn_prop, cn_prop: $cn_prop, pgid_prop: $pgid_prop, ct_prop: $ct_prop}}
             ) YIELD value
             RETURN value.found AS found
         """
 
-        sub_query_attempt2_direct_constructor = """
+        sub_query_attempt2_direct_constructor_cypher = """
             OPTIONAL MATCH (fsf:Function {name: $cn_prop, file_path: $cfile_prop, project_graph_id: $pgid_prop, is_method: false})
             WITH fsf
             OPTIONAL MATCH (faf:Function {name: $cn_prop, project_graph_id: $pgid_prop, is_method: false}) WHERE fsf IS NULL
             RETURN COALESCE(fsf, faf) AS found_func
         """
-        sub_query_attempt2_class_method_true = """
+        sub_query_attempt2_class_method_true_cypher = """
             MATCH (target_cls:Class {name: $bo_prop, project_graph_id: $pgid_prop})
             OPTIONAL MATCH (cmethod:Method {name: $cn_prop, class_name: $bo_prop, project_graph_id: $pgid_prop})
             WHERE (cmethod)-[:DEFINED_IN_CLASS]->(target_cls)
             RETURN cmethod AS found_func
         """
-        sub_query_attempt2_class_method_false = "RETURN null AS found_func"
+        sub_query_attempt2_class_method_false_cypher = "RETURN null AS found_func"
 
-        sub_query_attempt2_else_for_direct = f"""
-            CALL apoc.when($ct_prop ENDS WITH "_on_class" AND $bo_prop IS NOT NULL,
-                {json.dumps(sub_query_attempt2_class_method_true)},
-                {json.dumps(sub_query_attempt2_class_method_false)},
+        sub_query_attempt2_else_for_direct_for_doIt = f"""
+            CALL apoc.when(
+                $ct_prop ENDS WITH "_on_class" AND $bo_prop IS NOT NULL,
+                {json.dumps(sub_query_attempt2_class_method_true_cypher)},
+                {json.dumps(sub_query_attempt2_class_method_false_cypher)},
                 {{bo_prop: $bo_prop, cn_prop: $cn_prop, pgid_prop: $pgid_prop}}
-            ) YIELD value AS class_method_result RETURN class_method_result.found_func AS found_func
+            ) YIELD value AS class_method_result
+            RETURN class_method_result.found_func AS found_func
         """
-
-        sub_query_for_m2 = f"""
-            CALL apoc.when($ct_prop STARTS WITH "direct" OR $ct_prop STARTS WITH "constructor",
-                {json.dumps(sub_query_attempt2_direct_constructor)},
-                {json.dumps(sub_query_attempt2_else_for_direct)},
+        sub_query_for_m2_for_doIt = f"""
+            CALL apoc.when(
+                $ct_prop STARTS WITH "direct" OR $ct_prop STARTS WITH "constructor",
+                {json.dumps(sub_query_attempt2_direct_constructor_cypher)},
+                {json.dumps(sub_query_attempt2_else_for_direct_for_doIt)},
                 {{cn_prop: $cn_prop, cfile_prop: $cfile_prop, pgid_prop: $pgid_prop, ct_prop: $ct_prop, bo_prop: $bo_prop}}
             ) YIELD value
             RETURN value.found_func AS found_func
         """
-
-        sub_query_attempt3_method_on_object = """
+        sub_query_attempt3_method_on_object_cypher = """
             MATCH (m_other:Method {name: $cn_prop, project_graph_id: $pgid_prop})
             RETURN m_other AS found_other LIMIT 1
         """
-        sub_query_attempt3_false = "RETURN null AS found_other"
+        sub_query_attempt3_false_cypher = "RETURN null AS found_other"
 
-        apoc_main_query_string = f"""
+        apoc_main_query_string_for_final_call = f"""
             WITH $caller_cid AS caller_cid, $cn_prop AS cn_prop, $pgid_prop AS pgid_prop,
                  $cfile_prop AS cfile_prop, $ct_prop AS ct_prop, $bo_prop AS bo_prop, $ccn_prop AS ccn_prop
 
-            CALL apoc.cypher.doIt({json.dumps(sub_query_attempt1)},
+            CALL apoc.cypher.doIt({json.dumps(sub_query_attempt1_for_doIt)},
                                   {{ccn_prop: $ccn_prop, cn_prop: $cn_prop, pgid_prop: $pgid_prop, ct_prop: $ct_prop}}) YIELD value AS res1_map
             WITH res1_map.found AS found1, caller_cid, cn_prop, pgid_prop, cfile_prop, ct_prop, bo_prop, ccn_prop
 
             CALL apoc.cypher.doIt(
-                CASE WHEN found1 IS NULL AND $cn_prop IS NOT NULL AND ($ct_prop STARTS WITH "direct" OR $ct_prop STARTS WITH "constructor" OR $ct_prop ENDS WITH "_on_class")
-                THEN {json.dumps(sub_query_for_m2)}
-                ELSE "RETURN null as found_func" END,
+                CASE
+                  WHEN found1 IS NULL AND $cn_prop IS NOT NULL AND ($ct_prop STARTS WITH "direct" OR $ct_prop STARTS WITH "constructor" OR $ct_prop ENDS WITH "_on_class")
+                  THEN {json.dumps(sub_query_for_m2_for_doIt)}
+                  ELSE "RETURN null as found_func"
+                END,
                 {{cn_prop: $cn_prop, cfile_prop: $cfile_prop, pgid_prop: $pgid_prop, ct_prop: $ct_prop, bo_prop: $bo_prop, ccn_prop:$ccn_prop, caller_cid:caller_cid}}
             ) YIELD value AS res2_map
             WITH found1, COALESCE(res2_map.found_func, null) AS found2, caller_cid, cn_prop, pgid_prop, cfile_prop, ct_prop, bo_prop, ccn_prop
 
             CALL apoc.cypher.doIt(
-                CASE WHEN found1 IS NULL AND found2 IS NULL AND $ct_prop = "method_call_on_object" AND $cn_prop IS NOT NULL
-                THEN {json.dumps(sub_query_attempt3_method_on_object)}
-                ELSE {json.dumps(sub_query_attempt3_false)} END,
+                CASE
+                  WHEN found1 IS NULL AND found2 IS NULL AND $ct_prop = "method_call_on_object" AND $cn_prop IS NOT NULL
+                  THEN {json.dumps(sub_query_attempt3_method_on_object_cypher)}
+                  ELSE {json.dumps(sub_query_attempt3_false_cypher)}
+                END,
                 {{cn_prop: $cn_prop, pgid_prop: $pgid_prop}}
             ) YIELD value AS res3_map
 
             RETURN COALESCE(found1, found2, res3_map.found_other) AS final_callee
         """
-        # ========================================================================
-        # KẾT THÚC ĐỊNH NGHĨA CHUỖI CYPHER CON
-        # ========================================================================
+        # --- KẾT THÚC ĐỊNH NGHĨA APOC QUERY STRING ---
+
 
         await self._clear_existing_data_for_file(file_path_in_repo)
         cypher_batch: List[Tuple[str, Dict[str, Any]]] = []
         file_composite_id = f"{self.project_graph_id}:{file_path_in_repo}"
 
+        # (Phần tạo Node File, Project, Import, Global Variable, Class, Method, Function, Decorator, ExceptionType giữ nguyên)
+        # ... (Giữ nguyên các đoạn code tạo thực thể đã có)
         file_node_props = {
             "path": file_path_in_repo, "project_graph_id": self.project_graph_id,
             "language": language or "unknown", "name": Path(file_path_in_repo).name,
@@ -358,10 +380,8 @@ class CKGBuilder:
                 if not actual_module_path:
                     logger.warning(f"CKGBuilder: Skipping import with empty module_path in file {file_path_in_repo}, line {imp_data.start_line}")
                     continue
-
                 module_composite_id = f"{self.project_graph_id}:MODULE:{actual_module_path}"
                 module_name_from_path = actual_module_path.split('.')[-1] or actual_module_path
-
                 valid_imported_names = []
                 if imp_data.imported_names:
                     for name, alias in imp_data.imported_names:
@@ -369,31 +389,24 @@ class CKGBuilder:
                             valid_imported_names.append({"original": name.strip(), "alias": alias.strip() if alias else None})
                         elif alias and alias.strip():
                              valid_imported_names.append({"original": ".", "alias": alias.strip()})
-
                 cypher_batch.append((
                     """
                     MERGE (m:Module {composite_id: $module_composite_id})
                     ON CREATE SET m.path = $module_path, m.name = $module_name,
                                   m.project_graph_id = $project_graph_id, m.is_stub = true,
                                   m.relative_level = $relative_level, m.ckg_created_at = timestamp()
-                    ON MATCH SET m.ckg_updated_at = timestamp()
+                    ON MATCH SET m.ckg_updated_at = timestamp(), m.relative_level = $relative_level
                     WITH m
                     MATCH (f:File {composite_id: $file_composite_id})
                     MERGE (f)-[r:IMPORTS_MODULE {type: $import_type, line: $import_line}]->(m)
-                    ON CREATE SET r.imported_names = [item IN $imported_names_list WHERE item.original IS NOT NULL | item.original],
-                                  r.aliases = [item IN $imported_names_list WHERE item.alias IS NOT NULL | item.alias],
-                                  r.timestamp = timestamp()
-                    ON MATCH SET  r.imported_names = [item IN $imported_names_list WHERE item.original IS NOT NULL | item.original],
-                                  r.aliases = [item IN $imported_names_list WHERE item.alias IS NOT NULL | item.alias]
+                    ON CREATE SET r.imported_names_json = $imported_names_json, r.timestamp = timestamp()
+                    ON MATCH SET  r.imported_names_json = $imported_names_json
                     """, {
-                        "module_composite_id": module_composite_id,
-                        "module_path": actual_module_path,
-                        "module_name": module_name_from_path,
-                        "project_graph_id": self.project_graph_id,
-                        "relative_level": imp_data.relative_level,
-                        "file_composite_id": file_composite_id,
+                        "module_composite_id": module_composite_id, "module_path": actual_module_path,
+                        "module_name": module_name_from_path, "project_graph_id": self.project_graph_id,
+                        "relative_level": imp_data.relative_level, "file_composite_id": file_composite_id,
                         "import_type": imp_data.import_type or "unknown",
-                        "imported_names_list": valid_imported_names,
+                        "imported_names_json": json.dumps(valid_imported_names),
                         "import_line": imp_data.start_line
                     }
                 ))
@@ -465,11 +478,16 @@ class CKGBuilder:
                     MATCH (owner:Class {composite_id: $owner_id})
                     MERGE (d:Decorator {composite_id: $dec_comp_id})
                     ON CREATE SET d.name = $dec_name, d.project_graph_id = $project_graph_id,
-                                  d.file_path = $file_path, d.applied_to_type = 'Class', d.ckg_created_at = timestamp()
+                                  d.file_path = $file_path, d.applied_to_line = $applied_line, 
+                                  d.applied_to_type = 'Class', d.ckg_created_at = timestamp()
+                    ON MATCH SET d.ckg_updated_at = timestamp()
                     MERGE (owner)-[:HAS_DECORATOR]->(d)
                     """, {
-                        "owner_id": class_composite_id, "dec_name": dec_name, "project_graph_id": self.project_graph_id,
-                        "dec_comp_id": decorator_class_comp_id, "file_path": file_path_in_repo
+                        "owner_id": class_composite_id, "dec_name": dec_name, 
+                        "project_graph_id": self.project_graph_id,
+                        "dec_comp_id": decorator_class_comp_id, 
+                        "file_path": file_path_in_repo,
+                        "applied_line": cls_data.start_line
                     }
                 ))
 
@@ -478,7 +496,7 @@ class CKGBuilder:
                 if not method_name_safe:
                     logger.warning(f"CKGBuilder: Skipping method with empty name in class {class_name_safe}, file {file_path_in_repo}")
                     continue
-                method_composite_id = f"{self.project_graph_id}:{file_path_in_repo}:{method_name_safe}:{method_data.start_line}"
+                method_composite_id = f"{self.project_graph_id}:{file_path_in_repo}:{class_name_safe}.{method_name_safe}:{method_data.start_line}"
                 method_props = {
                     "name": method_name_safe, "file_path": file_path_in_repo,
                     "start_line": method_data.start_line, "end_line": method_data.end_line,
@@ -520,11 +538,16 @@ class CKGBuilder:
                         MATCH (owner:Method {composite_id: $owner_id})
                         MERGE (d:Decorator {composite_id: $dec_comp_id})
                         ON CREATE SET d.name = $dec_name, d.project_graph_id = $project_graph_id,
-                                      d.file_path = $file_path, d.applied_to_type = 'Method', d.ckg_created_at = timestamp()
+                                      d.file_path = $file_path, d.applied_to_line = $applied_line,
+                                      d.applied_to_type = 'Method', d.ckg_created_at = timestamp()
+                        ON MATCH SET d.ckg_updated_at = timestamp()
                         MERGE (owner)-[:HAS_DECORATOR]->(d)
                         """, {
-                            "owner_id": method_composite_id, "dec_name": dec_name, "project_graph_id": self.project_graph_id,
-                            "dec_comp_id": decorator_method_comp_id, "file_path": file_path_in_repo
+                            "owner_id": method_composite_id, "dec_name": dec_name,
+                            "project_graph_id": self.project_graph_id,
+                            "dec_comp_id": decorator_method_comp_id, 
+                            "file_path": file_path_in_repo,
+                            "applied_line": method_data.start_line
                         }
                     ))
                 for ex_name_raw in method_data.raised_exceptions:
@@ -536,6 +559,7 @@ class CKGBuilder:
                         MATCH (owner:Method {composite_id: $owner_id})
                         MERGE (ex:ExceptionType {composite_id: $ex_type_comp_id})
                         ON CREATE SET ex.name = $ex_name, ex.project_graph_id = $project_graph_id, ex.ckg_created_at = timestamp()
+                        ON MATCH SET ex.ckg_updated_at = timestamp()
                         MERGE (owner)-[:RAISES_EXCEPTION]->(ex)
                         """, {"owner_id": method_composite_id, "ex_name": ex_name,
                               "project_graph_id": self.project_graph_id, "ex_type_comp_id": ex_type_comp_id}
@@ -549,12 +573,13 @@ class CKGBuilder:
                         MATCH (owner:Method {composite_id: $owner_id})
                         MERGE (ex:ExceptionType {composite_id: $ex_type_comp_id})
                         ON CREATE SET ex.name = $ex_name, ex.project_graph_id = $project_graph_id, ex.ckg_created_at = timestamp()
+                        ON MATCH SET ex.ckg_updated_at = timestamp()
                         MERGE (owner)-[:HANDLES_EXCEPTION]->(ex)
                         """, {"owner_id": method_composite_id, "ex_name": ex_name,
                               "project_graph_id": self.project_graph_id, "ex_type_comp_id": ex_type_comp_id}
                     ))
 
-        for func_data in parsed_data.functions:
+        for func_data in parsed_data.functions: # Global functions
             func_name_safe = func_data.name.strip() if func_data.name else None
             if not func_name_safe:
                 logger.warning(f"CKGBuilder: Skipping global function with empty name in file {file_path_in_repo} at line {func_data.start_line}")
@@ -596,11 +621,16 @@ class CKGBuilder:
                     MATCH (owner:Function {composite_id: $owner_id})
                     MERGE (d:Decorator {composite_id: $dec_comp_id})
                     ON CREATE SET d.name = $dec_name, d.project_graph_id = $project_graph_id,
-                                  d.file_path = $file_path, d.applied_to_type = 'Function', d.ckg_created_at = timestamp()
+                                  d.file_path = $file_path, d.applied_to_line = $applied_line,
+                                  d.applied_to_type = 'Function', d.ckg_created_at = timestamp()
+                    ON MATCH SET d.ckg_updated_at = timestamp()
                     MERGE (owner)-[:HAS_DECORATOR]->(d)
                     """, {
-                        "owner_id": func_composite_id, "dec_name": dec_name, "project_graph_id": self.project_graph_id,
-                        "dec_comp_id": decorator_func_comp_id, "file_path": file_path_in_repo
+                        "owner_id": func_composite_id, "dec_name": dec_name,
+                        "project_graph_id": self.project_graph_id,
+                        "dec_comp_id": decorator_func_comp_id, 
+                        "file_path": file_path_in_repo,
+                        "applied_line": func_data.start_line
                     }
                 ))
             for ex_name_raw in func_data.raised_exceptions:
@@ -612,6 +642,7 @@ class CKGBuilder:
                     MATCH (owner:Function {composite_id: $owner_id})
                     MERGE (ex:ExceptionType {composite_id: $ex_type_comp_id})
                     ON CREATE SET ex.name = $ex_name, ex.project_graph_id = $project_graph_id, ex.ckg_created_at = timestamp()
+                    ON MATCH SET ex.ckg_updated_at = timestamp()
                     MERGE (owner)-[:RAISES_EXCEPTION]->(ex)
                     """, {"owner_id": func_composite_id, "ex_name": ex_name,
                           "project_graph_id": self.project_graph_id, "ex_type_comp_id": ex_type_comp_id }
@@ -625,6 +656,7 @@ class CKGBuilder:
                     MATCH (owner:Function {composite_id: $owner_id})
                     MERGE (ex:ExceptionType {composite_id: $ex_type_comp_id})
                     ON CREATE SET ex.name = $ex_name, ex.project_graph_id = $project_graph_id, ex.ckg_created_at = timestamp()
+                    ON MATCH SET ex.ckg_updated_at = timestamp()
                     MERGE (owner)-[:HANDLES_EXCEPTION]->(ex)
                     """, {"owner_id": func_composite_id, "ex_name": ex_name,
                            "project_graph_id": self.project_graph_id, "ex_type_comp_id": ex_type_comp_id}
@@ -636,62 +668,161 @@ class CKGBuilder:
                 await self._execute_write_queries(cypher_batch)
             except Exception as e_main_batch:
                 logger.error(f"CKGBuilder: Error executing main entity batch for {file_path_in_repo}. Error: {e_main_batch}", exc_info=True)
-
-        # --- Link CALLS ---
-        call_link_queries_batch: List[Tuple[str, Dict[str, Any]]] = []
-        all_callable_entities_in_file = parsed_data.functions + [
-            method for cls_data in parsed_data.classes for method in cls_data.methods
+        
+        usage_modification_creation_batch: List[Tuple[str, Dict[str, Any]]] = []
+        all_functions_and_methods_in_file = parsed_data.functions + [
+            method for cls in parsed_data.classes for method in cls.methods
         ]
 
-        for defined_entity in all_callable_entities_in_file:
-            defined_entity_name_safe = defined_entity.name.strip() if defined_entity.name else None
-            if not defined_entity_name_safe:
-                continue
-            if not defined_entity.calls:
-                continue
+        for func_or_method_item in all_functions_and_methods_in_file:
+            owner_name_for_id_calc = func_or_method_item.name
+            if func_or_method_item.class_name:
+                owner_name_for_id_calc = f"{func_or_method_item.class_name}.{func_or_method_item.name}"
+            
+            owner_composite_id = f"{self.project_graph_id}:{file_path_in_repo}:{owner_name_for_id_calc}:{func_or_method_item.start_line}"
+            owner_node_label = ":Method:Function" if func_or_method_item.class_name else ":Function"
 
-            caller_composite_id = f"{self.project_graph_id}:{file_path_in_repo}:{defined_entity_name_safe}:{defined_entity.start_line}"
+            for var_name_used, line_num_usage in func_or_method_item.uses_variables:
+                if '.' in var_name_used and var_name_used.startswith("self.") and func_or_method_item.class_name:
+                    attr_name_only = var_name_used.split('.', 1)[1]
+                    find_var_query = f"""
+                        MATCH (owner_func{owner_node_label} {{composite_id: $owner_func_id}})
+                        MATCH (v:Variable {{name: $attr_name, scope_name: $class_name, scope_type: 'class_attribute', project_graph_id: $pgid, file_path: $fpath}})
+                        MERGE (owner_func)-[r:USES_VARIABLE {{line: $line, context: 'attribute_access'}}]->(v)
+                        RETURN r.line
+                    """
+                    usage_modification_creation_batch.append((
+                        find_var_query, {
+                            "owner_func_id": owner_composite_id, "attr_name": attr_name_only,
+                            "class_name": func_or_method_item.class_name, "pgid": self.project_graph_id,
+                            "fpath": file_path_in_repo, "line": line_num_usage
+                        } ))
+                else:
+                    find_and_link_var_query = f"""
+                        MATCH (owner_func{owner_node_label} {{composite_id: $owner_func_id}})
+                        OPTIONAL MATCH (v_local_param:Variable {{name: $var_name, scope_name: $func_scope_name, project_graph_id: $pgid, file_path: $fpath}})
+                        OPTIONAL MATCH (v_global:Variable {{name: $var_name, scope_type: 'global_variable', project_graph_id: $pgid, file_path: $fpath}})
+                        WITH owner_func, COALESCE(v_local_param, v_global) as final_used_var
+                        WHERE final_used_var IS NOT NULL
+                        MERGE (owner_func)-[r:USES_VARIABLE {{line: $line}}]->(final_used_var)
+                        RETURN r.line
+                    """
+                    usage_modification_creation_batch.append((
+                        find_and_link_var_query, {
+                            "owner_func_id": owner_composite_id,
+                            "var_name": var_name_used,
+                            "func_scope_name": owner_name_for_id_calc,
+                            "pgid": self.project_graph_id,
+                            "fpath": file_path_in_repo,
+                            "line": line_num_usage
+                        }
+                    ))
+
+            for var_name_modified, line_num_modification, mod_context in func_or_method_item.modifies_variables:
+                if '.' in var_name_modified and var_name_modified.startswith("self.") and func_or_method_item.class_name:
+                    attr_name_mod_only = var_name_modified.split('.', 1)[1]
+                    find_mod_var_query = f"""
+                        MATCH (owner_func{owner_node_label} {{composite_id: $owner_func_id}})
+                        MATCH (v:Variable {{name: $attr_name, scope_name: $class_name, scope_type: 'class_attribute', project_graph_id: $pgid, file_path: $fpath}})
+                        MERGE (owner_func)-[r:MODIFIES_VARIABLE {{line: $line, context: $mod_context}}]->(v)
+                        RETURN r.line
+                    """
+                    usage_modification_creation_batch.append((
+                        find_mod_var_query, {
+                            "owner_func_id": owner_composite_id, "attr_name": attr_name_mod_only,
+                            "class_name": func_or_method_item.class_name, "pgid": self.project_graph_id,
+                            "fpath": file_path_in_repo, "line": line_num_modification,
+                            "mod_context": mod_context
+                        } ))
+                else: 
+                    find_and_link_mod_var_query = f"""
+                        MATCH (owner_func{owner_node_label} {{composite_id: $owner_func_id}})
+                        OPTIONAL MATCH (v_local_param:Variable {{name: $var_name, scope_name: $func_scope_name, project_graph_id: $pgid, file_path: $fpath}})
+                        OPTIONAL MATCH (v_global:Variable {{name: $var_name, scope_type: 'global_variable', project_graph_id: $pgid, file_path: $fpath}})
+                        WITH owner_func, COALESCE(v_local_param, v_global) as final_mod_var
+                        WHERE final_mod_var IS NOT NULL
+                        MERGE (owner_func)-[r:MODIFIES_VARIABLE {{line: $line, context: $mod_context}}]->(final_mod_var)
+                        RETURN r.line
+                    """
+                    usage_modification_creation_batch.append((
+                        find_and_link_mod_var_query, {
+                            "owner_func_id": owner_composite_id,
+                            "var_name": var_name_modified,
+                            "func_scope_name": owner_name_for_id_calc,
+                            "pgid": self.project_graph_id,
+                            "fpath": file_path_in_repo,
+                            "line": line_num_modification,
+                            "mod_context": mod_context
+                        }
+                    ))
+
+            for class_name_created, line_num_creation in func_or_method_item.created_objects:
+                link_creates_object_query = f"""
+                    MATCH (creator_func{owner_node_label} {{composite_id: $creator_func_id}})
+                    MATCH (created_class:Class {{name: $class_name_to_find, project_graph_id: $pgid}})
+                    MERGE (creator_func)-[r:CREATES_OBJECT {{line: $line}}]->(created_class)
+                    ON CREATE SET r.timestamp = timestamp()
+                    RETURN r.line
+                """
+                usage_modification_creation_batch.append((
+                    link_creates_object_query, {
+                        "creator_func_id": owner_composite_id,
+                        "class_name_to_find": class_name_created,
+                        "pgid": self.project_graph_id,
+                        "line": line_num_creation
+                    }
+                ))
+        
+        if usage_modification_creation_batch:
+            logger.debug(f"CKGBuilder: Executing USES/MODIFIES/CREATES batch of {len(usage_modification_creation_batch)} queries for file {file_path_in_repo}.")
+            try:
+                await self._execute_write_queries(usage_modification_creation_batch)
+            except Exception as e_usage_mod_create:
+                logger.error(f"CKGBuilder: Error executing USES/MODIFIES/CREATES batch for {file_path_in_repo}. Error: {e_usage_mod_create}", exc_info=True)
+
+        call_link_queries_batch: List[Tuple[str, Dict[str, Any]]] = []
+        for defined_entity in all_functions_and_methods_in_file:
+            defined_entity_name_safe = defined_entity.name.strip() if defined_entity.name else None
+            if not defined_entity_name_safe: continue
+            if not defined_entity.calls: continue
+
             caller_class_name_safe = defined_entity.class_name.strip() if defined_entity.class_name else None
+            caller_name_for_id = defined_entity_name_safe
+            if caller_class_name_safe:
+                caller_name_for_id = f"{caller_class_name_safe}.{defined_entity_name_safe}"
+
+            caller_composite_id = f"{self.project_graph_id}:{file_path_in_repo}:{caller_name_for_id}:{defined_entity.start_line}"
             caller_node_label_for_match = ":Method:Function" if caller_class_name_safe else ":Function"
 
             for called_name, base_object_name, call_type, call_site_line in defined_entity.calls:
-
                 final_callee_name = called_name.strip() if isinstance(called_name, str) and called_name.strip() else None
                 final_base_object_name = base_object_name.strip() if isinstance(base_object_name, str) and base_object_name.strip() else None
                 final_caller_class_name = caller_class_name_safe
                 final_call_type = call_type.strip() if isinstance(call_type, str) and call_type.strip() else "unknown_call_type"
 
                 if not final_callee_name:
-                    logger.warning(
-                        f"CKGBuilder: Skipping CALLS link due to empty or None callee_name. "
-                        f"Original callee_name: '{called_name}'. Caller: '{defined_entity_name_safe}' in file '{file_path_in_repo}' at line {call_site_line}."
-                    )
+                    logger.warning(f"CKGBuilder: Skipping CALLS link due to empty callee_name. Caller: '{defined_entity_name_safe}' in {file_path_in_repo} at L{call_site_line}.")
                     continue
 
                 apoc_subquery_params = {
-                    "caller_cid": caller_composite_id,
-                    "cn_prop": final_callee_name,
-                    "pgid_prop": self.project_graph_id,
-                    "cfile_prop": file_path_in_repo,
-                    "ct_prop": final_call_type,
-                    "bo_prop": final_base_object_name,
+                    "caller_cid": caller_composite_id, "cn_prop": final_callee_name,
+                    "pgid_prop": self.project_graph_id, "cfile_prop": file_path_in_repo,
+                    "ct_prop": final_call_type, "bo_prop": final_base_object_name,
                     "ccn_prop": final_caller_class_name
                 }
-
                 params_for_apoc_call_query = {
-                    "caller_composite_id": caller_composite_id,
+                    "caller_composite_id": caller_composite_id, 
                     "call_params": apoc_subquery_params,
-                    "call_type_prop": final_call_type,
+                    "call_type_prop": final_call_type, 
                     "base_object_prop": final_base_object_name,
                     "call_site_line_prop": call_site_line
                 }
-
                 if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(f"Preparing APOC CALLS query. Outer params: {json.dumps(params_for_apoc_call_query, indent=2)}")
-
+                     logger.debug(f"Preparing APOC CALLS query. Params: {json.dumps(params_for_apoc_call_query, indent=2, default=str)}")
+                
                 resolve_and_link_query_apoc = f"""
                 MATCH (caller{caller_node_label_for_match} {{composite_id: $caller_composite_id}})
-                CALL apoc.cypher.doIt({json.dumps(apoc_main_query_string)}, $call_params) YIELD value AS callee_map
+                CALL apoc.cypher.doIt({json.dumps(apoc_main_query_string_for_final_call)}, $call_params) YIELD value AS callee_map
                 WITH caller, callee_map.final_callee AS actual_callee
                 WHERE actual_callee IS NOT NULL
                 MERGE (caller)-[r:CALLS]->(actual_callee)
@@ -705,19 +836,19 @@ class CKGBuilder:
                 """
                 call_link_queries_batch.append((resolve_and_link_query_apoc, params_for_apoc_call_query))
 
+
         if call_link_queries_batch:
             logger.debug(f"CKGBuilder: Executing batch of {len(call_link_queries_batch)} CALLS link queries for file {file_path_in_repo}.")
             try:
                 await self._execute_write_queries(call_link_queries_batch)
             except Exception as e_calls:
-                # Log lỗi nhưng không re-raise để không dừng toàn bộ quá trình build của file
                 logger.error(f"CKGBuilder: Error executing CALLS link batch for {file_path_in_repo}. Some call links might be missing. Error: {e_calls}", exc_info=True)
-
 
         logger.info(f"CKGBuilder: Finished CKG processing for file '{file_path_in_repo}'.")
 
 
     async def build_for_project_from_path(self, repo_local_path: str):
+        # (Giữ nguyên logic)
         logger.info(f"CKGBuilder: Starting CKG build for project '{self.project_graph_id}' from path: {repo_local_path}")
         await self._ensure_project_node()
         source_path_obj = Path(repo_local_path); files_processed_count = 0; files_to_process: List[Tuple[Path, Optional[str]]] = []
