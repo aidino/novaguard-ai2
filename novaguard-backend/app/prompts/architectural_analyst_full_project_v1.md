@@ -72,6 +72,12 @@ Based on ALL the provided information, especially the CKG Summary:
       - `project_summary` (Optional[str]): A brief overall summary of your findings.
       - `project_level_findings` (List[LLMProjectLevelFinding]): A list of project-level issues.
       - `granular_findings` (List[LLMSingleFinding]): (Optional) If you identify highly critical, specific code-level issues during your project-wide review that fit the `LLMSingleFinding` schema, include them here. Prefer `project_level_findings` for architectural concerns.
+  - For any critical, specific code-level issues identified during your project-wide review that fit the `LLMSingleFinding` schema, include them in the `granular_findings` list.
+    - **Crucially, ensure that each object in `project_level_findings` and `granular_findings` lists includes all required fields from their respective schemas.**
+  - For items in `granular_findings` (which follow the `LLMSingleFinding` schema):
+        - Use the field name **`message`** for the main textual description of the issue.
+        - Use the field name **`finding_type`** for the category of the granular finding (e.g., 'Security Vulnerability', 'Code Smell', 'Performance Bottleneck').
+  - The `severity` for all findings must be one of 'Error', 'Warning', 'Note', or 'Info'.
 
 **CRITICAL**: Your response must be **ONLY** the single JSON object specified. No preamble, no explanations, no conversational text—just the JSON.
 Adhere **STRICTLY** to the JSON schema instructions provided by:
