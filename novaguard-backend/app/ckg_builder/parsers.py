@@ -698,24 +698,70 @@ class PythonParser(BaseCodeParser):
 
 _parsers_cache: Dict[str, BaseCodeParser] = {}
 def get_code_parser(language: str) -> Optional[BaseCodeParser]:
-    # (Giữ nguyên logic)
+    """Get appropriate parser for the given language.
+    
+    Args:
+        language: Programming language name (e.g., 'python', 'javascript', 'typescript')
+        
+    Returns:
+        BaseCodeParser instance or None if language not supported
+    """
     language_key = language.lower().strip()
     if not language_key:
         logger.warning("get_code_parser called with empty language string.")
         return None
+        
+    # Check cache first
+    if language_key in _parsers_cache:
+        return _parsers_cache[language_key]
+    
     parser_instance: Optional[BaseCodeParser] = None
+    
     if language_key == "python":
         try:
             parser_instance = PythonParser()
             if isinstance(parser_instance, PythonParser):
-                 if parser_instance.QUERY_DEFINITIONS and not parser_instance.queries :
+                if parser_instance.QUERY_DEFINITIONS and not parser_instance.queries:
                     logger.error(f"PythonParser for '{language_key}' initialized, but NO queries were compiled. Parser will be ineffective.")
-                 elif parser_instance.QUERY_DEFINITIONS and len(parser_instance.queries) < len(parser_instance.QUERY_DEFINITIONS):
+                elif parser_instance.QUERY_DEFINITIONS and len(parser_instance.queries) < len(parser_instance.QUERY_DEFINITIONS):
                     logger.warning(f"PythonParser for '{language_key}' initialized with SOME query compilation errors. Results may be incomplete.")
         except Exception as e:
             logger.error(f"Failed to instantiate PythonParser for '{language_key}' due to: {type(e).__name__} - {e}", exc_info=True)
             return None
+            
+    elif language_key in ["javascript", "js"]:
+        try:
+            # Import here to avoid circular imports
+            from .parsers.javascript_parser import JavaScriptParser
+            parser_instance = JavaScriptParser("javascript")
+            if isinstance(parser_instance, JavaScriptParser):
+                if parser_instance.QUERY_DEFINITIONS and not parser_instance.queries:
+                    logger.error(f"JavaScriptParser for '{language_key}' initialized, but NO queries were compiled. Parser will be ineffective.")
+                elif parser_instance.QUERY_DEFINITIONS and len(parser_instance.queries) < len(parser_instance.QUERY_DEFINITIONS):
+                    logger.warning(f"JavaScriptParser for '{language_key}' initialized with SOME query compilation errors. Results may be incomplete.")
+        except Exception as e:
+            logger.error(f"Failed to instantiate JavaScriptParser for '{language_key}' due to: {type(e).__name__} - {e}", exc_info=True)
+            return None
+            
+    elif language_key in ["typescript", "ts"]:
+        try:
+            # Import here to avoid circular imports
+            from .parsers.javascript_parser import JavaScriptParser
+            parser_instance = JavaScriptParser("typescript")
+            if isinstance(parser_instance, JavaScriptParser):
+                if parser_instance.QUERY_DEFINITIONS and not parser_instance.queries:
+                    logger.error(f"TypeScriptParser for '{language_key}' initialized, but NO queries were compiled. Parser will be ineffective.")
+                elif parser_instance.QUERY_DEFINITIONS and len(parser_instance.queries) < len(parser_instance.QUERY_DEFINITIONS):
+                    logger.warning(f"TypeScriptParser for '{language_key}' initialized with SOME query compilation errors. Results may be incomplete.")
+        except Exception as e:
+            logger.error(f"Failed to instantiate TypeScriptParser for '{language_key}' due to: {type(e).__name__} - {e}", exc_info=True)
+            return None
     else:
-        logger.warning(f"No specific parser class implemented for language: '{language}'.")
+        logger.warning(f"No specific parser class implemented for language: '{language}'. Supported languages: python, javascript, typescript")
         return None
+    
+    # Cache the parser instance for reuse
+    if parser_instance:
+        _parsers_cache[language_key] = parser_instance
+        
     return parser_instance
