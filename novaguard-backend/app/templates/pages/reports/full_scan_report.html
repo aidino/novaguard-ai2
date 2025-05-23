@@ -44,6 +44,91 @@
             white-space: pre-wrap;
             word-break: break-all;
         }
+        
+        /* Styles for Raw LLM Content (Graceful Degradation) */
+        .raw-llm-content {
+            background-color: #fffbeb; /* amber-50 */
+            border-left: 4px solid #f59e0b; /* amber-500 */
+            border-radius: 0.5rem;
+            padding: 1rem;
+            margin: 1rem 0;
+            font-family: 'Monaco', 'Consolas', 'Courier New', monospace;
+            font-size: 0.875rem;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 600px;
+            overflow-y: auto;
+            position: relative;
+        }
+        
+        .raw-llm-header {
+            background-color: #f59e0b; /* amber-500 */
+            color: white;
+            padding: 0.5rem 1rem;
+            margin: -1rem -1rem 1rem -1rem;
+            border-radius: 0.375rem 0.375rem 0 0;
+            font-weight: 600;
+            font-size: 0.875rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .raw-llm-toggle {
+            background-color: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .raw-llm-toggle:hover {
+            background-color: rgba(255, 255, 255, 0.3);
+        }
+        
+        .raw-llm-content.collapsed .raw-llm-body {
+            display: none;
+        }
+        
+        .parsing-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.375rem;
+            font-weight: 500;
+        }
+        
+        .parsing-status.success {
+            background-color: #d1fae5; /* green-100 */
+            color: #065f46; /* green-800 */
+        }
+        
+        .parsing-status.failed {
+            background-color: #fee2e2; /* red-100 */
+            color: #991b1b; /* red-800 */
+        }
+        
+        .export-btn {
+            background-color: #6366f1; /* indigo-500 */
+            color: white;
+            padding: 0.375rem 0.75rem;
+            border-radius: 0.375rem;
+            font-size: 0.75rem;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-left: 0.5rem;
+        }
+        
+        .export-btn:hover {
+            background-color: #4f46e5; /* indigo-600 */
+        }
     </style>
 {% endblock %}
 
@@ -99,41 +184,124 @@
 
 
     {% if project_level_findings or granular_findings %}
+        {# Analysis Mode Indicator #}
+        {% set has_raw_content = project_level_findings|selectattr('raw_llm_content')|list or granular_findings|selectattr('raw_llm_content')|list %}
+        {% if has_raw_content %}
+            <div class="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-md">
+                <div class="flex items-center gap-2 mb-2">
+                    <span class="parsing-status failed">
+                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path>
+                        </svg>
+                        Mixed Analysis Mode
+                    </span>
+                </div>
+                <p class="text-sm text-amber-700">
+                    This report contains both structured analysis and raw LLM output. Some findings could not be parsed into structured format but contain valuable insights for manual review.
+                </p>
+            </div>
+        {% else %}
+            <div class="mb-6 p-4 bg-green-50 border border-green-200 rounded-md">
+                <div class="flex items-center gap-2 mb-2">
+                    <span class="parsing-status success">
+                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>
+                        </svg>
+                        Structured Analysis Mode
+                    </span>
+                </div>
+                <p class="text-sm text-green-700">
+                    All analysis results were successfully parsed and are displayed in structured format with full filtering and sorting capabilities.
+                </p>
+            </div>
+        {% endif %}
+
         {# Project-Level Findings #}
         {% if project_level_findings %}
             <h2 class="text-xl font-semibold text-nv-dark mt-8 mb-4">Project-Level & Architectural Findings ({{ project_level_findings | length }})</h2>
             {% for finding in project_level_findings %}
-            <div class="finding-card finding-severity-{{ finding.severity.value | lower }} bg-white border border-gray-200 rounded-lg shadow-md mb-6">
-                <div class="p-4 border-b border-gray-200 flex justify-between items-center">
-                    <span class="finding-title text-gray-800 whitespace-normal break-words">{{ finding.module_name or finding.message }}</span>
-                    <span class="severity-badge severity-badge-{{ finding.severity.value | lower }}">{{ finding.severity.value | capitalize }}</span>
-                </div>
-                <div class="p-4 space-y-3 text-sm">
-                    <div>
-                        <p class="font-semibold text-gray-700">Description:</p>
-                        <p class="text-gray-600 whitespace-pre-wrap">{{ finding.message }}</p>
+                {% if finding.raw_llm_content %}
+                    {# Raw LLM Content Display (Graceful Degradation Mode) #}
+                    <div class="raw-llm-content" id="raw-content-{{ loop.index }}">
+                        <div class="raw-llm-header">
+                            <div>
+                                <span>🔍 Raw LLM Analysis Output</span>
+                                <span class="ml-2 text-xs opacity-75">
+                                    {% if finding.meta_data and finding.meta_data.provider_name %}
+                                        {{ finding.meta_data.provider_name }}
+                                        {% if finding.meta_data.model_name %}({{ finding.meta_data.model_name }}){% endif %}
+                                    {% else %}
+                                        LLM Provider
+                                    {% endif %}
+                                </span>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <button class="raw-llm-toggle" onclick="toggleRawContent('raw-content-{{ loop.index }}')">
+                                    <span class="toggle-text">Collapse</span>
+                                </button>
+                                <button class="export-btn" onclick="exportRawContent('raw-content-{{ loop.index }}', 'project-analysis-{{ loop.index }}.txt')">
+                                    Export
+                                </button>
+                            </div>
+                        </div>
+                        <div class="raw-llm-body">
+                            {% if finding.meta_data and finding.meta_data.parsing_error %}
+                                <div class="mb-3 p-3 bg-red-100 border border-red-200 rounded text-sm text-red-800">
+                                    <strong>Parsing Error:</strong> {{ finding.meta_data.parsing_error }}
+                                </div>
+                            {% endif %}
+                            <div class="mb-3 text-sm text-amber-700 border-b border-amber-200 pb-2">
+                                <strong>Status:</strong> JSON parsing failed, displaying raw analysis for manual review<br>
+                                <strong>Content Length:</strong> {{ finding.raw_llm_content|length }} characters<br>
+                                {% if finding.meta_data and finding.meta_data.content_length %}
+                                    <strong>Original Length:</strong> {{ finding.meta_data.content_length }} characters
+                                {% endif %}
+                            </div>
+                            <div class="raw-content-text">{{ finding.raw_llm_content }}</div>
+                        </div>
                     </div>
-                    {% if finding.suggestion %}
-                    <div class="mt-2">
-                        <p class="font-semibold text-gray-700">Recommendation/Suggestion:</p>
-                        <p class="text-gray-600 whitespace-pre-wrap">{{ finding.suggestion }}</p>
+                {% else %}
+                    {# Standard Structured Finding Display #}
+                    <div class="finding-card finding-severity-{{ finding.severity.value | lower }} bg-white border border-gray-200 rounded-lg shadow-md mb-6">
+                        <div class="p-4 border-b border-gray-200 flex justify-between items-center">
+                            <span class="finding-title text-gray-800 whitespace-normal break-words">{{ finding.module_name or finding.message }}</span>
+                            <div class="flex items-center gap-2">
+                                <span class="parsing-status success">
+                                    <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>
+                                    </svg>
+                                    Structured
+                                </span>
+                                <span class="severity-badge severity-badge-{{ finding.severity.value | lower }}">{{ finding.severity.value | capitalize }}</span>
+                            </div>
+                        </div>
+                        <div class="p-4 space-y-3 text-sm">
+                            <div>
+                                <p class="font-semibold text-gray-700">Description:</p>
+                                <p class="text-gray-600 whitespace-pre-wrap">{{ finding.message }}</p>
+                            </div>
+                            {% if finding.suggestion %}
+                            <div class="mt-2">
+                                <p class="font-semibold text-gray-700">Recommendation/Suggestion:</p>
+                                <p class="text-gray-600 whitespace-pre-wrap">{{ finding.suggestion }}</p>
+                            </div>
+                            {% endif %}
+                            {% if finding.code_snippet %} {# code_snippet có thể chứa "Relevant Components" #}
+                            <div class="mt-2">
+                                <p class="font-semibold text-gray-700">Details/Relevant Components:</p>
+                                <p class="text-gray-600 whitespace-pre-wrap">{{ finding.code_snippet }}</p>
+                            </div>
+                            {% endif %}
+                             {% if finding.meta_data %}
+                            <div class="mt-2">
+                                <p class="font-semibold text-gray-700">Additional Data:</p>
+                                <pre class="meta-data-json">{{ finding.meta_data | tojson(indent=2) }}</pre>
+                            </div>
+                            {% endif %}
+                            <p class="text-xs text-gray-500 mt-2">Agent: {{ finding.agent_name or "NovaGuard FullScan Agent" }} | Type: {{ finding.finding_type or "N/A" }}</p>
+                        </div>
                     </div>
-                    {% endif %}
-                    {% if finding.code_snippet %} {# code_snippet có thể chứa "Relevant Components" #}
-                    <div class="mt-2">
-                        <p class="font-semibold text-gray-700">Details/Relevant Components:</p>
-                        <p class="text-gray-600 whitespace-pre-wrap">{{ finding.code_snippet }}</p>
-                    </div>
-                    {% endif %}
-                     {% if finding.meta_data %}
-                    <div class="mt-2">
-                        <p class="font-semibold text-gray-700">Additional Data:</p>
-                        <pre class="meta-data-json">{{ finding.meta_data | tojson(indent=2) }}</pre>
-                    </div>
-                    {% endif %}
-                    <p class="text-xs text-gray-500 mt-2">Agent: {{ finding.agent_name or "NovaGuard FullScan Agent" }} | Type: {{ finding.finding_type or "N/A" }}</p>
-                </div>
-            </div>
+                {% endif %}
             {% endfor %}
         {% endif %}
 
@@ -141,52 +309,100 @@
         {% if granular_findings %}
             <h2 class="text-xl font-semibold text-nv-dark mt-10 mb-4">Specific Code Findings ({{ granular_findings | length }})</h2>
             {% for finding in granular_findings %}
-            <div class="finding-card finding-severity-{{ finding.severity.value | lower }} bg-white border border-gray-200 rounded-lg shadow-md mb-6">
-                <div class="p-4 border-b border-gray-200 flex justify-between items-center">
-                    <span class="finding-title text-gray-800 whitespace-normal break-words">{{ finding.message }}</span>
-                    <span class="severity-badge severity-badge-{{ finding.severity.value | lower }}">{{ finding.severity.value | capitalize }}</span>
-                </div>
-                <div class="p-4 space-y-3 text-sm">
-                    <p><strong>File:</strong> 
-                        {% if finding.file_path and finding.file_path != "N/A" %}
-                        <code class="text-nv-med-dark bg-gray-100 px-1.5 py-0.5 rounded-md text-xs">{{ finding.file_path }}</code>
-                        {% else %}
-                        <span class="text-gray-500 italic">N/A</span>
-                        {% endif %}
-                       {% if finding.line_start %}
-                         <span class="text-gray-500 ml-1">(Line{{ "s" if finding.line_end and finding.line_start != finding.line_end else "" }}
-                         {{ finding.line_start }}{% if finding.line_end and finding.line_start != finding.line_end %}-{{ finding.line_end }}{% endif %})</span>
-                       {% endif %}
-                    </p>
-                    
-                    <div>
-                        <p class="font-semibold text-gray-700">Full Description:</p>
-                        <p class="text-gray-600 whitespace-pre-wrap">{{ finding.message }}</p>
+                {% if finding.raw_llm_content %}
+                    {# Raw LLM Content Display (Graceful Degradation Mode) #}
+                    <div class="raw-llm-content" id="raw-content-granular-{{ loop.index }}">
+                        <div class="raw-llm-header">
+                            <div>
+                                <span>🔍 Raw LLM Analysis Output</span>
+                                <span class="ml-2 text-xs opacity-75">
+                                    {% if finding.meta_data and finding.meta_data.provider_name %}
+                                        {{ finding.meta_data.provider_name }}
+                                        {% if finding.meta_data.model_name %}({{ finding.meta_data.model_name }}){% endif %}
+                                    {% else %}
+                                        LLM Provider
+                                    {% endif %}
+                                </span>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <button class="raw-llm-toggle" onclick="toggleRawContent('raw-content-granular-{{ loop.index }}')">
+                                    <span class="toggle-text">Collapse</span>
+                                </button>
+                                <button class="export-btn" onclick="exportRawContent('raw-content-granular-{{ loop.index }}', 'granular-analysis-{{ loop.index }}.txt')">
+                                    Export
+                                </button>
+                            </div>
+                        </div>
+                        <div class="raw-llm-body">
+                            {% if finding.meta_data and finding.meta_data.parsing_error %}
+                                <div class="mb-3 p-3 bg-red-100 border border-red-200 rounded text-sm text-red-800">
+                                    <strong>Parsing Error:</strong> {{ finding.meta_data.parsing_error }}
+                                </div>
+                            {% endif %}
+                            <div class="mb-3 text-sm text-amber-700 border-b border-amber-200 pb-2">
+                                <strong>Status:</strong> JSON parsing failed, displaying raw analysis for manual review<br>
+                                <strong>Content Length:</strong> {{ finding.raw_llm_content|length }} characters
+                            </div>
+                            <div class="raw-content-text">{{ finding.raw_llm_content }}</div>
+                        </div>
                     </div>
-                    
-                    {% if finding.suggestion %}
-                    <div class="mt-2">
-                        <p class="font-semibold text-gray-700">Suggestion:</p>
-                        <p class="text-gray-600 whitespace-pre-wrap">{{ finding.suggestion }}</p>
-                    </div>
-                    {% endif %}
+                {% else %}
+                    {# Standard Structured Finding Display #}
+                    <div class="finding-card finding-severity-{{ finding.severity.value | lower }} bg-white border border-gray-200 rounded-lg shadow-md mb-6">
+                        <div class="p-4 border-b border-gray-200 flex justify-between items-center">
+                            <span class="finding-title text-gray-800 whitespace-normal break-words">{{ finding.message }}</span>
+                            <div class="flex items-center gap-2">
+                                <span class="parsing-status success">
+                                    <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>
+                                    </svg>
+                                    Structured
+                                </span>
+                                <span class="severity-badge severity-badge-{{ finding.severity.value | lower }}">{{ finding.severity.value | capitalize }}</span>
+                            </div>
+                        </div>
+                        <div class="p-4 space-y-3 text-sm">
+                            <p><strong>File:</strong> 
+                                {% if finding.file_path and finding.file_path != "N/A" %}
+                                <code class="text-nv-med-dark bg-gray-100 px-1.5 py-0.5 rounded-md text-xs">{{ finding.file_path }}</code>
+                                {% else %}
+                                <span class="text-gray-500 italic">N/A</span>
+                                {% endif %}
+                               {% if finding.line_start %}
+                                 <span class="text-gray-500 ml-1">(Line{{ "s" if finding.line_end and finding.line_start != finding.line_end else "" }}
+                                 {{ finding.line_start }}{% if finding.line_end and finding.line_start != finding.line_end %}-{{ finding.line_end }}{% endif %})</span>
+                               {% endif %}
+                            </p>
+                            
+                            <div>
+                                <p class="font-semibold text-gray-700">Full Description:</p>
+                                <p class="text-gray-600 whitespace-pre-wrap">{{ finding.message }}</p>
+                            </div>
+                            
+                            {% if finding.suggestion %}
+                            <div class="mt-2">
+                                <p class="font-semibold text-gray-700">Suggestion:</p>
+                                <p class="text-gray-600 whitespace-pre-wrap">{{ finding.suggestion }}</p>
+                            </div>
+                            {% endif %}
 
-                    {% if finding.code_snippet %}
-                    <div class="mt-3">
-                        <p class="font-semibold text-gray-700 mb-1">Relevant Code Snippet:</p>
-                        {% set lang = finding.file_path.split('.')[-1] if finding.file_path and '.' in finding.file_path else 'plaintext' %}
-                        <pre><code class="language-{{ lang }} hljs">{{- finding.code_snippet -}}</code></pre>
+                            {% if finding.code_snippet %}
+                            <div class="mt-3">
+                                <p class="font-semibold text-gray-700 mb-1">Relevant Code Snippet:</p>
+                                {% set lang = finding.file_path.split('.')[-1] if finding.file_path and '.' in finding.file_path else 'plaintext' %}
+                                <pre><code class="language-{{ lang }} hljs">{{- finding.code_snippet -}}</code></pre>
+                            </div>
+                            {% endif %}
+                            {% if finding.meta_data %}
+                            <div class="mt-2">
+                                <p class="font-semibold text-gray-700">Additional Data:</p>
+                                <pre class="meta-data-json">{{ finding.meta_data | tojson(indent=2) }}</pre>
+                            </div>
+                            {% endif %}
+                            <p class="text-xs text-gray-500 mt-2">Agent: {{ finding.agent_name or "NovaGuard FullScan Agent" }} | Type: {{ finding.finding_type or "N/A" }}</p>
+                        </div>
                     </div>
-                    {% endif %}
-                    {% if finding.meta_data %}
-                    <div class="mt-2">
-                        <p class="font-semibold text-gray-700">Additional Data:</p>
-                        <pre class="meta-data-json">{{ finding.meta_data | tojson(indent=2) }}</pre>
-                    </div>
-                    {% endif %}
-                    <p class="text-xs text-gray-500 mt-2">Agent: {{ finding.agent_name or "NovaGuard FullScan Agent" }} | Type: {{ finding.finding_type or "N/A" }}</p>
-                </div>
-            </div>
+                {% endif %}
             {% endfor %}
         {% endif %}
 
@@ -212,5 +428,71 @@
             hljs.highlightElement(el);
         });
     });
+    
+    // Toggle raw content visibility
+    function toggleRawContent(contentId) {
+        const content = document.getElementById(contentId);
+        const toggle = content.querySelector('.raw-llm-toggle .toggle-text');
+        
+        if (content.classList.contains('collapsed')) {
+            content.classList.remove('collapsed');
+            toggle.textContent = 'Collapse';
+        } else {
+            content.classList.add('collapsed');
+            toggle.textContent = 'Expand';
+        }
+    }
+    
+    // Export raw content to text file
+    function exportRawContent(contentId, filename) {
+        const content = document.getElementById(contentId);
+        const rawText = content.querySelector('.raw-content-text').textContent;
+        const metadata = content.querySelector('.raw-llm-header').textContent.trim();
+        
+        // Prepare export content
+        const exportContent = `NovaGuard AI Raw Analysis Export
+Generated: ${new Date().toISOString()}
+${metadata}
+
+${'='.repeat(80)}
+
+${rawText}`;
+        
+        // Create and download file
+        const blob = new Blob([exportContent], { type: 'text/plain' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        
+        // Show confirmation
+        const exportBtn = content.querySelector('.export-btn');
+        const originalText = exportBtn.textContent;
+        exportBtn.textContent = 'Exported!';
+        exportBtn.style.backgroundColor = '#10b981'; // green-500
+        setTimeout(() => {
+            exportBtn.textContent = originalText;
+            exportBtn.style.backgroundColor = '#6366f1'; // indigo-500
+        }, 2000);
+    }
+    
+    // Copy raw content to clipboard
+    function copyRawContent(contentId) {
+        const content = document.getElementById(contentId);
+        const rawText = content.querySelector('.raw-content-text').textContent;
+        
+        navigator.clipboard.writeText(rawText).then(() => {
+            // Show confirmation
+            alert('Raw analysis content copied to clipboard!');
+        }).catch(err => {
+            console.error('Failed to copy content: ', err);
+            alert('Failed to copy content to clipboard');
+        });
+    }
     </script>
 {% endblock %}

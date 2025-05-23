@@ -15,6 +15,7 @@ from app.llm_service import (
     LLMProviderConfig,
     LLMServiceError
 )
+from app.llm_service.service import invoke_llm_analysis_chain, LLMAnalysisResult
 
 from app.core.config import get_settings, Settings
 from app.core.db import SessionLocal as AppSessionLocal
@@ -26,7 +27,9 @@ from app.common.github_client import GitHubAPIClient
 from app.project_service import crud_full_scan
 from app.models import FullProjectAnalysisStatus # Import Enum
 from app.ckg_builder import CKGBuilder
-from .llm_schemas import LLMSingleFinding, LLMStructuredOutput, LLMProjectLevelFinding, LLMProjectAnalysisOutput # Thêm schema mới
+from app.analysis_worker.llm_schemas import (
+    LLMProjectAnalysisOutput, LLMProjectLevelFinding, SeverityLevel
+)
 
 
 # --- Logging Setup ---
@@ -647,7 +650,8 @@ async def run_full_project_analysis_agents(
         )
         logger.info(f"Worker (Full Scan - Arch): Invoking LLMService with provider: {llm_config_architect.provider_name}, model: {llm_config_architect.model_name or 'provider_default'}")
 
-        architectural_llm_result: LLMProjectAnalysisOutput = await invoke_llm_analysis_chain(
+        # Enhanced LLM service call with graceful degradation support
+        architectural_llm_analysis: LLMAnalysisResult = await invoke_llm_analysis_chain(
             prompt_template_str=arch_prompt_template_str,
             dynamic_context_values=full_project_context,
             output_pydantic_model_class=LLMProjectAnalysisOutput,
@@ -655,8 +659,10 @@ async def run_full_project_analysis_agents(
             settings_obj=settings_obj
         )
 
-        if architectural_llm_result:
-            logger.info(f"Architectural analysis agent for '{project_name_for_log}' (model: {architectural_model_name or 'default'}) completed.")
+        if architectural_llm_analysis.parsing_succeeded:
+            # Successfully parsed - use structured output as before
+            architectural_llm_result = architectural_llm_analysis.parsed_output
+            logger.info(f"Architectural analysis agent for '{project_name_for_log}' (model: {architectural_model_name or 'default'}) completed with structured output.")
             
             # Enhanced logging for full project analysis results
             project_findings_count = len(architectural_llm_result.project_level_findings) if architectural_llm_result.project_level_findings else 0
@@ -717,8 +723,48 @@ async def run_full_project_analysis_agents(
             
             if project_findings_count == 0 and granular_findings_count == 0:
                 logger.info(f"Worker (Full Scan): No specific architectural issues detected by LLM for project '{project_name_for_log}'")
+                
         else:
-            logger.warning(f"Architectural analysis agent for '{project_name_for_log}' returned no result.")
+            # Parsing failed - use raw content as fallback
+            logger.warning(f"Architectural analysis agent for '{project_name_for_log}' parsing failed, using raw output as fallback.")
+            logger.warning(f"Worker (Full Scan): Parsing error: {architectural_llm_analysis.parsing_error}")
+            
+            # Create a project summary from the raw content
+            raw_content = architectural_llm_analysis.raw_content
+            content_preview = raw_content[:500] + "..." if len(raw_content) > 500 else raw_content
+            
+            final_project_analysis_output.project_summary = f"Analysis completed by {architectural_llm_analysis.provider_name} ({architectural_llm_analysis.model_name}). JSON parsing failed, displaying raw analysis below."
+            
+            # Create a special finding to hold the raw content using AnalysisFindingCreate
+            # This will be stored properly in the database with the raw content
+            raw_content_finding_create = am_schemas.AnalysisFindingCreate(
+                file_path="Raw LLM Analysis Output",
+                severity=SeverityLevel.INFO,  # Use INFO since this is informational
+                message=f"LLM provided analysis but output format was not parseable. Raw content preserved for manual review.",
+                suggestion="Review the raw LLM output below for valuable insights that could not be automatically parsed.",
+                agent_name=agent_name_architect,
+                code_snippet=None,
+                finding_type="raw_analysis_output",
+                finding_level="project",
+                module_name="Raw Analysis Output",
+                meta_data={
+                    "parsing_failed": True,
+                    "parsing_error": architectural_llm_analysis.parsing_error,
+                    "provider_name": architectural_llm_analysis.provider_name,
+                    "model_name": architectural_llm_analysis.model_name,
+                    "content_length": len(raw_content)
+                },
+                raw_llm_content=raw_content  # Store the full raw content here
+            )
+            
+            # We'll need to store this finding separately since it's not part of the structured output
+            # Store it in a temporary list to be processed later
+            if not hasattr(final_project_analysis_output, '_raw_content_findings'):
+                final_project_analysis_output._raw_content_findings = []
+            final_project_analysis_output._raw_content_findings.append(raw_content_finding_create)
+            
+            logger.info(f"Worker (Full Scan): Created raw content finding for manual review. Content length: {len(raw_content)} chars")
+            logger.info(f"Worker (Full Scan): Raw content preview: {content_preview}")
 
 
 
@@ -1112,6 +1158,11 @@ async def process_message_logic(message_value: dict, db: Session, settings_obj: 
                         finding_level="file", meta_data=granular_finding.meta_data,
                         finding_type=granular_finding.finding_type
                     ))
+            
+            # Add raw content findings if parsing failed (graceful degradation)
+            if hasattr(llm_analysis_output, '_raw_content_findings') and llm_analysis_output._raw_content_findings:
+                logger.info(f"PML (FullScan): Adding {len(llm_analysis_output._raw_content_findings)} raw content findings to database for manual review")
+                all_findings_to_create_db.extend(llm_analysis_output._raw_content_findings)
             
             if all_findings_to_create_db:
                 # Trước khi tạo, xóa các finding cũ của full_scan_request_id này (nếu có, phòng trường hợp chạy lại)

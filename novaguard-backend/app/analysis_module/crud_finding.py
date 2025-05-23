@@ -28,7 +28,9 @@ def create_analysis_findings(
         module_name = getattr(finding_in, 'module_name', None)
         meta_data_dict = getattr(finding_in, 'meta_data', None)
         meta_data_json = json.dumps(meta_data_dict) if meta_data_dict else None
-
+        
+        # Handle raw LLM content for graceful degradation
+        raw_llm_content = getattr(finding_in, 'raw_llm_content', None)
 
         db_finding = AnalysisFinding(
             pr_analysis_request_id=pr_analysis_request_id,
@@ -48,7 +50,10 @@ def create_analysis_findings(
             finding_type=getattr(finding_in, 'finding_type', None), # Từ LLMSingleFinding
             finding_level=finding_level,
             module_name=module_name,
-            meta_data=meta_data_json # Lưu dưới dạng JSON string
+            meta_data=meta_data_json, # Lưu dưới dạng JSON string
+            
+            # Store raw LLM content when parsing fails
+            raw_llm_content=raw_llm_content
         )
         db_findings.append(db_finding)
 

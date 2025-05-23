@@ -169,7 +169,12 @@ CREATE TABLE analysisfindings (
     CONSTRAINT chk_one_request_id_must_exist CHECK (
         (pr_analysis_request_id IS NOT NULL AND full_project_analysis_request_id IS NULL) OR
         (pr_analysis_request_id IS NULL AND full_project_analysis_request_id IS NOT NULL)
-    )
+    ),
+
+    -- Migration: Add raw_llm_content field for graceful degradation
+    -- This allows storing unparseable LLM output for manual review
+    raw_llm_content TEXT NULL 
+    COMMENT 'Stores raw LLM output when JSON parsing fails, for graceful degradation'
 );
 
 -- Thêm comment cho các cột mới (tùy chọn, nhưng tốt cho việc đọc hiểu schema)
@@ -183,8 +188,6 @@ COMMENT ON COLUMN projects.llm_model_name IS 'Specific LLM model name chosen for
 COMMENT ON COLUMN projects.llm_temperature IS 'LLM temperature setting for this project';
 COMMENT ON COLUMN projects.llm_api_key_override_encrypted IS 'Encrypted API key to override global settings for this project';
 COMMENT ON COLUMN projects.output_language IS 'Desired language for analysis results (en, vi, ko)';
-
-
 
 -- Optional: Tạo trigger để tự động cập nhật trường updated_at cho users và projects
 CREATE OR REPLACE FUNCTION trigger_set_timestamp()
@@ -226,5 +229,10 @@ CREATE INDEX IF NOT EXISTS idx_analysisfindings_severity ON analysisfindings(sev
 CREATE INDEX IF NOT EXISTS idx_analysisfindings_finding_level ON analysisfindings(finding_level);
 CREATE INDEX IF NOT EXISTS idx_analysisfindings_finding_type ON analysisfindings(finding_type);
 -- CREATE INDEX IF NOT EXISTS idx_analysisfindings_meta_data_gin ON analysisfindings USING GIN (meta_data); -- Index GIN cho JSONB nếu bạn có nhu cầu query sâu vào meta_data
+
+-- Index for raw content queries
+CREATE INDEX IF NOT EXISTS idx_analysisfindings_has_raw_content 
+ON analysisfindings (id) 
+WHERE raw_llm_content IS NOT NULL;
 
 COMMIT;
