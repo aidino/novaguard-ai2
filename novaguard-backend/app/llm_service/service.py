@@ -1,6 +1,7 @@
 # novaguard-backend/app/llm_service/service.py
 import logging
 from typing import Type, Dict, Any, Optional, TypeVar
+import json
 
 from pydantic import BaseModel
 
@@ -103,7 +104,9 @@ async def invoke_llm_analysis_chain(
     Nó tự xây dựng chain và trả về Pydantic object đã được parse.
     """
     provider_name_for_log = llm_provider_config.provider_name
-    logger.info(f"LLMService: Invoking analysis chain with provider: {provider_name_for_log}")
+    model_name_for_log = llm_provider_config.model_name or "default"
+    
+    logger.info(f"LLMService: Invoking analysis chain with provider: {provider_name_for_log}, model: {model_name_for_log}")
     logger.debug(f"LLMService: Dynamic context keys: {list(dynamic_context_values.keys())}")
     
     if logger.isEnabledFor(logging.DEBUG): # Log context rút gọn
@@ -123,7 +126,11 @@ async def invoke_llm_analysis_chain(
         # Tạo một bản sao của dynamic_context_values để thêm format_instructions
         # mà không làm thay đổi dict gốc được truyền vào.
         prompt_input_values = dynamic_context_values.copy()
-        prompt_input_values["format_instructions"] = pydantic_parser.get_format_instructions()
+        format_instructions = pydantic_parser.get_format_instructions()
+        prompt_input_values["format_instructions"] = format_instructions
+
+        # Log format instructions for debugging
+        logger.debug(f"LLMService: Format instructions sent to LLM:\n{format_instructions}")
 
         chat_prompt_template_obj = ChatPromptTemplate.from_template(template=prompt_template_str)
         
@@ -155,9 +162,6 @@ async def invoke_llm_analysis_chain(
                 logger.warning(f"LLMService: Could not fully format prompt for logging: {e_log_prompt}")
         # === KẾT THÚC LOGGING PROMPT ===
 
-        # Xây dựng chain (không cần partial fill format_instructions nữa vì đã có trong prompt_input_values)
-        analysis_chain = chat_prompt_template_obj | llm_instance | output_parser_with_fix
-        
         # Kiểm tra biến thiếu trước khi invoke
         missing_vars_for_invoke = set(chat_prompt_template_obj.input_variables) - set(prompt_input_values.keys())
         if missing_vars_for_invoke:
@@ -169,13 +173,89 @@ async def invoke_llm_analysis_chain(
                 provider=provider_name_for_log
             )
         
-        parsed_output: PydanticOutputModel = await analysis_chain.ainvoke(prompt_input_values)
+        # === ENHANCED LLM OUTPUT LOGGING ===
+        logger.info(f"LLMService: Sending request to {provider_name_for_log} ({model_name_for_log})...")
         
-        logger.info(f"LLMService: Successfully received and parsed structured response from {provider_name_for_log}.")
-        if logger.isEnabledFor(logging.DEBUG) and isinstance(parsed_output, BaseModel):
+        # Get raw LLM response first (without parsing)
+        prompt_messages = chat_prompt_template_obj.format_messages(**prompt_input_values)
+        raw_llm_response = await llm_instance.ainvoke(prompt_messages)
+        
+        # Log raw LLM response
+        raw_content = raw_llm_response.content if hasattr(raw_llm_response, 'content') else str(raw_llm_response)
+        logger.info(f"LLMService: Raw LLM Response from {provider_name_for_log} ({model_name_for_log}):")
+        logger.info(f"---RAW LLM OUTPUT START---")
+        logger.info(f"{raw_content}")
+        logger.info(f"---RAW LLM OUTPUT END---")
+        
+        # Try to parse the raw response
+        logger.info(f"LLMService: Attempting to parse raw response using Pydantic parser...")
+        
+        try:
+            # First try basic parsing
+            parsed_output = pydantic_parser.parse(raw_content)
+            logger.info(f"LLMService: ✅ Successfully parsed response with basic Pydantic parser")
+            
+        except Exception as parse_error:
+            logger.warning(f"LLMService: ⚠️ Basic Pydantic parsing failed: {parse_error}")
+            logger.info(f"LLMService: Attempting to fix response using OutputFixingParser...")
+            
             try:
-                logger.debug(f"LLMService: Parsed output (JSON):\n{parsed_output.model_dump_json(indent=2)}")
-            except Exception: pass
+                # Use OutputFixingParser to attempt fixing
+                parsed_output = output_parser_with_fix.parse(raw_content)
+                logger.info(f"LLMService: ✅ Successfully parsed response using OutputFixingParser")
+                
+            except Exception as fix_error:
+                logger.error(f"LLMService: ❌ OutputFixingParser also failed: {fix_error}")
+                logger.error(f"LLMService: Raw response that failed to parse:\n{raw_content}")
+                raise LLMServiceError(
+                    f"Failed to parse LLM response after attempting fixes. Raw response logged above.",
+                    provider=provider_name_for_log,
+                    details=f"Parse error: {parse_error}, Fix error: {fix_error}"
+                ) from fix_error
+        
+        # Log the final parsed output with detailed analysis
+        logger.info(f"LLMService: Successfully received and parsed structured response from {provider_name_for_log} ({model_name_for_log})")
+        
+        if isinstance(parsed_output, BaseModel):
+            try:
+                parsed_json = parsed_output.model_dump_json(indent=2)
+                logger.info(f"LLMService: Final Parsed Output (JSON):")
+                logger.info(f"---PARSED OUTPUT START---")
+                logger.info(f"{parsed_json}")
+                logger.info(f"---PARSED OUTPUT END---")
+                
+                # Additional analysis for debugging
+                parsed_dict = parsed_output.model_dump()
+                
+                if hasattr(parsed_output, 'findings'):
+                    findings_count = len(parsed_dict.get('findings', []))
+                    logger.info(f"LLMService: Analysis Summary - Found {findings_count} findings")
+                    
+                    if findings_count > 0:
+                        for i, finding in enumerate(parsed_dict['findings'][:3]):  # Log first 3 findings
+                            file_path = finding.get('file_path', 'N/A')
+                            severity = finding.get('severity', 'N/A')
+                            message_preview = finding.get('message', '')[:100] + "..." if len(finding.get('message', '')) > 100 else finding.get('message', '')
+                            logger.info(f"LLMService: Finding #{i+1}: {severity} in {file_path} - {message_preview}")
+                
+                elif hasattr(parsed_output, 'project_level_findings'):
+                    project_findings = len(parsed_dict.get('project_level_findings', []))
+                    granular_findings = len(parsed_dict.get('granular_findings', []))
+                    logger.info(f"LLMService: Project Analysis Summary - {project_findings} project findings, {granular_findings} granular findings")
+                    
+                    if parsed_dict.get('project_summary'):
+                        summary_preview = parsed_dict['project_summary'][:200] + "..." if len(parsed_dict['project_summary']) > 200 else parsed_dict['project_summary']
+                        logger.info(f"LLMService: Project Summary: {summary_preview}")
+                    
+                    if project_findings > 0:
+                        for i, finding in enumerate(parsed_dict['project_level_findings'][:2]):  # Log first 2 project findings
+                            category = finding.get('finding_category', 'N/A')
+                            severity = finding.get('severity', 'N/A')
+                            desc_preview = finding.get('description', '')[:100] + "..." if len(finding.get('description', '')) > 100 else finding.get('description', '')
+                            logger.info(f"LLMService: Project Finding #{i+1}: {severity} - {category} - {desc_preview}")
+                
+            except Exception as json_error:
+                logger.warning(f"LLMService: Could not serialize parsed output to JSON for logging: {json_error}")
 
         return parsed_output
 
