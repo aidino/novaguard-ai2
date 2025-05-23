@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS fullprojectanalysisrequests (
     id SERIAL PRIMARY KEY,
     project_id INT REFERENCES projects(id) ON DELETE CASCADE NOT NULL,
     branch_name VARCHAR(255) NOT NULL,
+    project_graph_id VARCHAR(255), -- Store the specific CKG identifier for this full project analysis
     status full_project_analysis_status_enum DEFAULT 'pending' NOT NULL,
     error_message TEXT,
     requested_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
@@ -115,6 +116,7 @@ CREATE TABLE IF NOT EXISTS pranalysisrequests (
     pr_title TEXT,
     pr_github_url VARCHAR(2048),
     head_sha VARCHAR(40),
+    project_graph_id VARCHAR(255), -- Store the specific CKG identifier for this PR analysis
     status pr_analysis_status_enum DEFAULT 'pending' NOT NULL,
     error_message TEXT,
     requested_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
@@ -174,7 +176,7 @@ CREATE TABLE analysisfindings (
     -- Migration: Add raw_llm_content field for graceful degradation
     -- This allows storing unparseable LLM output for manual review
     raw_llm_content TEXT NULL 
-    COMMENT 'Stores raw LLM output when JSON parsing fails, for graceful degradation'
+    -- Stores raw LLM output when JSON parsing fails, for graceful degradation
 );
 
 -- Thêm comment cho các cột mới (tùy chọn, nhưng tốt cho việc đọc hiểu schema)
@@ -234,5 +236,8 @@ CREATE INDEX IF NOT EXISTS idx_analysisfindings_finding_type ON analysisfindings
 CREATE INDEX IF NOT EXISTS idx_analysisfindings_has_raw_content 
 ON analysisfindings (id) 
 WHERE raw_llm_content IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_pranalysisrequests_project_graph_id ON pranalysisrequests(project_graph_id);
+CREATE INDEX IF NOT EXISTS idx_fullprojectanalysisrequests_project_graph_id ON fullprojectanalysisrequests(project_graph_id);
 
 COMMIT;

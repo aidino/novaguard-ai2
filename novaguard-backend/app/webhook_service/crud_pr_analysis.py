@@ -50,6 +50,22 @@ def update_pr_analysis_request_status(
         db.refresh(db_request)
     return db_request
 
+def update_pr_analysis_project_graph_id(
+    db: Session, 
+    request_id: int, 
+    project_graph_id: str
+) -> PRAnalysisRequest | None:
+    """
+    Update the project_graph_id for a PR analysis request.
+    This is called by the analysis worker when it builds the CKG.
+    """
+    db_request = get_pr_analysis_request_by_id(db, request_id)
+    if db_request:
+        db_request.project_graph_id = project_graph_id
+        db.commit()
+        db.refresh(db_request)
+    return db_request
+
 def get_pr_analysis_requests_by_project_id(
     db: Session, project_id: int, skip: int = 0, limit: int = 20
 ) -> List[PRAnalysisRequest]:

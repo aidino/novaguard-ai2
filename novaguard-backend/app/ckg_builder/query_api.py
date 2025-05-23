@@ -446,4 +446,184 @@ class CKGQueryAPI:
                 "additional_info": record["additional_info"]
             }
             for record in records
-        ] 
+        ]
+
+    async def get_project_graph_for_visualization(self, project_graph_id: str, entity_types: Optional[List[str]] = None, rel_types: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        Return the project graph as nodes and edges for visualization.
+        - entity_types: filter which node types to include (e.g., ["Project", "File", "Class", "Function"])
+        - rel_types: filter which relationship types to include (e.g., ["BELONGS_TO", "DEFINED_IN", "CALLS", "INHERITS_FROM", "IMPORTS"])
+        """
+        entity_types = entity_types or ["Project", "File", "Class", "Function"]
+        rel_types = rel_types or ["BELONGS_TO", "DEFINED_IN", "CALLS", "INHERITS_FROM", "IMPORTS"]
+
+        # Cypher query to get nodes, excluding test files/classes
+        node_query = '''
+        MATCH (n)
+        WHERE n.project_graph_id = $project_graph_id
+          AND any(label IN labels(n) WHERE label IN $entity_types)
+          AND (
+            (n.name IS NULL OR NOT toLower(n.name) CONTAINS 'test')
+            AND (n.file_path IS NULL OR NOT toLower(n.file_path) CONTAINS 'test')
+            AND (NOT any(label IN labels(n) WHERE toLower(label) = 'test'))
+          )
+        RETURN id(n) as id, labels(n) as labels, n as properties
+        '''
+        # Cypher query to get relationships, only between included nodes
+        rel_query = '''
+        MATCH (n)-[r]->(m)
+        WHERE n.project_graph_id = $project_graph_id
+          AND any(type IN $rel_types WHERE type(r) = type)
+          AND (
+            (n.name IS NULL OR NOT toLower(n.name) CONTAINS 'test')
+            AND (n.file_path IS NULL OR NOT toLower(n.file_path) CONTAINS 'test')
+            AND (NOT any(label IN labels(n) WHERE toLower(label) = 'test'))
+          )
+          AND (
+            (m.name IS NULL OR NOT toLower(m.name) CONTAINS 'test')
+            AND (m.file_path IS NULL OR NOT toLower(m.file_path) CONTAINS 'test')
+            AND (NOT any(label IN labels(m) WHERE toLower(label) = 'test'))
+          )
+        RETURN id(r) as id, type(r) as type, id(n) as source, id(m) as target, r as properties
+        '''
+
+        driver = await self._get_driver()
+        db_name = getattr(driver, '_database', 'neo4j')
+        async with driver.session(database=db_name) as session:
+            # Fetch nodes
+            node_records = await session.run(node_query, {"project_graph_id": project_graph_id, "entity_types": entity_types})
+            nodes = []
+            async for record in node_records:
+                nodes.append({
+                    "id": record["id"],
+                    "labels": record["labels"],
+                    "properties": dict(record["properties"]),
+                })
+            # Fetch relationships
+            rel_records = await session.run(rel_query, {"project_graph_id": project_graph_id, "rel_types": rel_types})
+            edges = []
+            async for record in rel_records:
+                edges.append({
+                    "id": record["id"],
+                    "type": record["type"],
+                    "source": record["source"],
+                    "target": record["target"],
+                    "properties": dict(record["properties"]),
+                })
+        return {"nodes": nodes, "edges": edges}
+
+    async def get_graph_for_display_mode(
+        self,
+        project_graph_id: str,
+        mode: str = "architectural_overview",
+        detail_level: int = 1,
+        changed_node_ids: Optional[List[str]] = None,
+        central_node_id: Optional[str] = None,
+        context_node_ids: Optional[List[str]] = None,
+        depth: Optional[int] = None,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Unified entry point for fetching graph data for visualization, supporting multiple display modes and levels of detail.
+        """
+        if mode == "architectural_overview":
+            return await self.get_architectural_overview_graph(project_graph_id, detail_level)
+        elif mode == "pr_impact":
+            return await self.get_pr_impact_graph(project_graph_id, changed_node_ids or [], depth or 1)
+        elif mode == "issue_focused":
+            return await self.get_issue_focused_subgraph(project_graph_id, central_node_id, context_node_ids or [])
+        elif mode == "detailed_exploration":
+            return await self.get_detailed_exploration_graph(project_graph_id, central_node_id, filters or {}, depth or 1)
+        else:
+            raise ValueError(f"Unknown display mode: {mode}")
+
+    async def get_architectural_overview_graph(self, project_graph_id: str, detail_level: int = 1) -> Dict[str, Any]:
+        """
+        Fetch a high-level architectural overview graph for the project, with adjustable level of detail.
+        LOD 1: File nodes and IMPORTS relationships.
+        LOD 2: File and Class nodes, IMPORTS and INHERITS_FROM relationships.
+        Excludes nodes (and their edges) with labels 'Test' or names containing 'test' (case-insensitive).
+        """
+        if detail_level == 1:
+            entity_types = ["File"]
+            rel_types = ["IMPORTS"]
+        else:
+            entity_types = ["File", "Class"]
+            rel_types = ["IMPORTS", "INHERITS_FROM"]
+
+        # Cypher query to get nodes, excluding test files/classes
+        node_query = '''
+        MATCH (n)
+        WHERE n.project_graph_id = $project_graph_id
+          AND any(label IN labels(n) WHERE label IN $entity_types)
+          AND (
+            (n.name IS NULL OR NOT toLower(n.name) CONTAINS 'test')
+            AND (n.file_path IS NULL OR NOT toLower(n.file_path) CONTAINS 'test')
+            AND (NOT any(label IN labels(n) WHERE toLower(label) = 'test'))
+          )
+        RETURN id(n) as id, labels(n) as labels, n as properties
+        '''
+        # Cypher query to get relationships, only between included nodes
+        rel_query = '''
+        MATCH (n)-[r]->(m)
+        WHERE n.project_graph_id = $project_graph_id
+          AND any(type IN $rel_types WHERE type(r) = type)
+          AND (
+            (n.name IS NULL OR NOT toLower(n.name) CONTAINS 'test')
+            AND (n.file_path IS NULL OR NOT toLower(n.file_path) CONTAINS 'test')
+            AND (NOT any(label IN labels(n) WHERE toLower(label) = 'test'))
+          )
+          AND (
+            (m.name IS NULL OR NOT toLower(m.name) CONTAINS 'test')
+            AND (m.file_path IS NULL OR NOT toLower(m.file_path) CONTAINS 'test')
+            AND (NOT any(label IN labels(m) WHERE toLower(label) = 'test'))
+          )
+        RETURN id(r) as id, type(r) as type, id(n) as source, id(m) as target, r as properties
+        '''
+
+        driver = await self._get_driver()
+        db_name = getattr(driver, '_database', 'neo4j')
+        async with driver.session(database=db_name) as session:
+            # Fetch nodes
+            node_records = await session.run(node_query, {"project_graph_id": project_graph_id, "entity_types": entity_types})
+            nodes = []
+            async for record in node_records:
+                nodes.append({
+                    "id": record["id"],
+                    "labels": record["labels"],
+                    "properties": dict(record["properties"]),
+                })
+            # Fetch relationships
+            rel_records = await session.run(rel_query, {"project_graph_id": project_graph_id, "rel_types": rel_types})
+            edges = []
+            async for record in rel_records:
+                edges.append({
+                    "id": record["id"],
+                    "type": record["type"],
+                    "source": record["source"],
+                    "target": record["target"],
+                    "properties": dict(record["properties"]),
+                })
+        # TODO: Add highlight logic for problematic nodes (e.g., from findings)
+        return {"nodes": nodes, "edges": edges, "highlight": {}}
+
+    async def get_pr_impact_graph(self, project_graph_id: str, changed_node_ids: List[str], depth: int = 1) -> Dict[str, Any]:
+        """
+        Fetch a graph showing the impact of a PR, highlighting changed and affected nodes.
+        """
+        # TODO: Implement Cypher queries for PR impact mode
+        return {"nodes": [], "edges": [], "highlight": {}}
+
+    async def get_issue_focused_subgraph(self, project_graph_id: str, central_node_id: str, context_node_ids: List[str]) -> Dict[str, Any]:
+        """
+        Fetch a focused subgraph centered on a problematic node and its context.
+        """
+        # TODO: Implement Cypher queries for issue-focused mode
+        return {"nodes": [], "edges": [], "highlight": {}}
+
+    async def get_detailed_exploration_graph(self, project_graph_id: str, start_node_id: str, filters: Dict[str, Any], depth: int = 1) -> Dict[str, Any]:
+        """
+        Fetch a subgraph for detailed exploration, starting from a node and expanding neighbors.
+        """
+        # TODO: Implement Cypher queries for detailed exploration mode
+        return {"nodes": [], "edges": [], "highlight": {}} 

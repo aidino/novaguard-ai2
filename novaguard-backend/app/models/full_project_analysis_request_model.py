@@ -21,6 +21,9 @@ class FullProjectAnalysisRequest(Base):
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     branch_name = Column(String(255), nullable=False)
 
+    # Store the specific CKG identifier for this full project analysis
+    project_graph_id = Column(String(255), nullable=True, index=True)
+
     status = Column(SQLAlchemyEnum(FullProjectAnalysisStatus,
                                 name="full_project_analysis_status_enum",
                                 create_type=True,

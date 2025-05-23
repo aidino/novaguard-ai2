@@ -6,10 +6,10 @@ from urllib.parse import urlencode
 import secrets
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, Request, Depends, Form, HTTPException, status, APIRouter, Query
+from fastapi import FastAPI, Request, Depends, Form, HTTPException, status, APIRouter, Query, Body
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -42,6 +42,8 @@ from app.models.analysis_finding_model import PyFindingLevel # Nếu bạn dùng
 from app.core.graph_db import close_async_neo4j_driver, get_async_neo4j_driver # Import các hàm Neo4j
 from app.common.message_queue.kafka_producer import send_pr_analysis_task # Đảm bảo import này
 from app.models.project_model import LLMProviderEnum, OutputLanguageEnum 
+from app.ckg_builder.query_api import CKGQueryAPI
+from neo4j import AsyncGraphDatabase
 
 
 
@@ -711,6 +713,32 @@ async def project_detail_page_ui_get(
         "current_year": datetime.now().year
     })
 
+async def get_latest_project_graph_id(project_id: int) -> str:
+    """
+    Query Neo4j for the latest project_graph_id for the given project_id (novaguard_id).
+    Returns the most recently created Project node's graph_id, or falls back to novaguard_project_{project_id}.
+    """
+    uri = "bolt://novaguard_neo4j:7687"  # Use Docker service name for Neo4j
+    user = "neo4j"
+    password = "yourStrongPassword"  # Updated to match docker-compose.yml
+    driver = AsyncGraphDatabase.driver(uri, auth=(user, password))
+    async with driver.session() as session:
+        result = await session.run(
+            """
+            MATCH (p:Project)
+            WHERE p.novaguard_id = $project_id
+            RETURN p.graph_id AS graph_id
+            ORDER BY p.created_at DESC
+            LIMIT 1
+            """,
+            {"project_id": str(project_id)}
+        )
+        record = await result.single()
+        await driver.close()
+        if record and record["graph_id"]:
+            return record["graph_id"]
+        return f"novaguard_project_{project_id}"  # fallback
+
 @ui_report_router.get("/full-scan/{request_id_param}/report", response_class=HTMLResponse, name="ui_full_scan_report_get")
 async def ui_full_scan_report_page(
     request: Request,
@@ -764,9 +792,23 @@ async def ui_full_scan_report_page(
         # Nếu failed, error_message thực sự là lỗi, không phải summary
         project_summary_from_db = f"Analysis failed: {full_scan_request_db.error_message}"
 
+    # --- Project Graph Visualization ---
+    project_graph_id = full_scan_request_db.project_graph_id
+    if not project_graph_id:
+        # Fallback to old logic if no project_graph_id is stored
+        project_graph_id = await get_latest_project_graph_id(project_of_scan.id)
+    
+    ckg_api = CKGQueryAPI()
+    project_graph = await ckg_api.get_project_graph_for_visualization(project_graph_id)
+    # Highlight nodes with architectural issues (project_level_findings)
+    highlight_node_ids = set()
+    for finding in project_level_findings:
+        if hasattr(finding, 'meta_data') and finding.meta_data and 'ckg_node_id' in finding.meta_data:
+            highlight_node_ids.add(finding.meta_data['ckg_node_id'])
+        # Optionally, use file_path/class_name info to match nodes
 
     return templates.TemplateResponse(
-        "pages/reports/full_scan_report.html", # Template mới sẽ được tạo ở bước sau
+        "pages/reports/full_scan_report.html",
         {
             "request": request,
             "page_title": f"Full Scan Report: {project_of_scan.repo_name} ({full_scan_request_db.branch_name})",
@@ -776,7 +818,10 @@ async def ui_full_scan_report_page(
             "project_summary": project_summary_from_db, # Summary từ LLM (nếu có)
             "project_level_findings": project_level_findings,
             "granular_findings": granular_findings,
-            "current_year": datetime.now().year
+            "current_year": datetime.now().year,
+            "project_graph": project_graph,
+            "highlight_node_ids": list(highlight_node_ids),
+            "project_graph_id": project_graph_id,
         }
     )
 
@@ -894,8 +939,8 @@ async def project_settings_page_ui_post(
 async def ui_pr_analysis_report_page(
     request: Request,
     request_id_param: int,
-    db: Session = Depends(get_db), # Sử dụng Session đồng bộ nếu CRUD functions của bạn đồng bộ
-    current_user: auth_schemas.UserPublic = Depends(get_current_ui_user) # Đảm bảo dependency này đúng
+    db: Session = Depends(get_db),
+    current_user: auth_schemas.UserPublic = Depends(get_current_ui_user)
 ):
     if not current_user:
         # ... (xử lý redirect nếu chưa login)
@@ -929,10 +974,23 @@ async def ui_pr_analysis_report_page(
     # finding_crud.get_findings_by_request_id là hàm bạn đã có trong app/analysis_module/crud_finding.py
     findings_db_list = finding_crud.get_findings_by_request_id(db, pr_analysis_request_id=request_id_param)
     
-    # Truyền trực tiếp các model objects (SQLAlchemy) vào template.
-    # Jinja2 có thể truy cập các thuộc tính của chúng.
+    # --- Project Graph Visualization ---
+    project_graph_id = pr_analysis_db_obj.project_graph_id
+    if not project_graph_id:
+        # Fallback to old logic if no project_graph_id is stored
+        project_graph_id = await get_latest_project_graph_id(project_of_pr.id)
+    
+    ckg_api = CKGQueryAPI()
+    project_graph = await ckg_api.get_project_graph_for_visualization(project_graph_id)
+    # Highlight nodes impacted by PR (from findings)
+    highlight_node_ids = set()
+    for finding in findings_db_list:
+        if hasattr(finding, 'meta_data') and finding.meta_data and 'ckg_node_id' in finding.meta_data:
+            highlight_node_ids.add(finding.meta_data['ckg_node_id'])
+        # Optionally, use file_path/class_name info to match nodes
+
     return templates.TemplateResponse(
-        "pages/reports/pr_analysis_report.html", # Đảm bảo đường dẫn này đúng
+        "pages/reports/pr_analysis_report.html",
         {
             "request": request,
             "page_title": f"PR Analysis: {pr_analysis_db_obj.pr_title or f'PR #{pr_analysis_db_obj.pr_number}'}",
@@ -940,8 +998,9 @@ async def ui_pr_analysis_report_page(
             "project": project_of_pr, 
             "pr_request_details": pr_analysis_db_obj, 
             "findings": findings_db_list, 
-            "current_year": datetime.now().year 
-            # "SeverityLevel": SeverityLevel, # Nếu bạn muốn dùng Enum SeverityLevel trong template cho CSS class chẳng hạn
+            "current_year": datetime.now().year,
+            "project_graph": project_graph,
+            "highlight_node_ids": list(highlight_node_ids),
         }
     )
 
@@ -1026,6 +1085,43 @@ async def delete_project_ui_post(
     
     request.session["_flash_messages"] = flash_messages
     return RedirectResponse(url=request.url_for("ui_dashboard_get"), status_code=status.HTTP_302_FOUND)
+
+@app.get("/api/ckg/graph", response_class=JSONResponse, tags=["API - CKG Visualization"])
+async def get_ckg_graph_data(
+    project_graph_id: str,
+    mode: str = "architectural_overview",
+    detail_level: int = 1,
+    changed_node_ids: Optional[str] = None,  # comma-separated string
+    central_node_id: Optional[str] = None,
+    context_node_ids: Optional[str] = None,  # comma-separated string
+    depth: Optional[int] = None,
+    filters: Optional[str] = None  # JSON string
+):
+    """
+    API endpoint to fetch CKG graph data for visualization, supporting display modes and levels of detail.
+    """
+    ckg_api = CKGQueryAPI()
+    # Parse list params
+    changed_node_ids_list = changed_node_ids.split(",") if changed_node_ids else []
+    context_node_ids_list = context_node_ids.split(",") if context_node_ids else []
+    filters_dict = {}
+    if filters:
+        import json
+        try:
+            filters_dict = json.loads(filters)
+        except Exception:
+            filters_dict = {}
+    result = await ckg_api.get_graph_for_display_mode(
+        project_graph_id=project_graph_id,
+        mode=mode,
+        detail_level=detail_level,
+        changed_node_ids=changed_node_ids_list,
+        central_node_id=central_node_id,
+        context_node_ids=context_node_ids_list,
+        depth=depth,
+        filters=filters_dict,
+    )
+    return JSONResponse(content=result)
 
 app.include_router(ui_pages_router)
 app.include_router(ui_auth_router)

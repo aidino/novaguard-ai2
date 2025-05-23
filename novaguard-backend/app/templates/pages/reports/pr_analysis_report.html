@@ -161,6 +161,28 @@
         </div>
     </div>
 
+    <div class="mb-4 flex gap-4 items-center">
+      <div class="flex gap-1">
+        <button id="zoom-in-btn" type="button" class="px-2 py-1 bg-gray-200 rounded hover:bg-gray-300 text-lg font-bold" title="Zoom In">+</button>
+        <button id="zoom-out-btn" type="button" class="px-2 py-1 bg-gray-200 rounded hover:bg-gray-300 text-lg font-bold" title="Zoom Out">-</button>
+      </div>
+    </div>
+
+    {# === Project Graph Visualization === #}
+    <div class="mb-10">
+        <h2 class="text-xl font-semibold text-nv-dark mb-2">Project Graph Visualization</h2>
+        <div id="project-graph-vis" style="width:100%; min-height:400px; height:500px; border:1px solid #e5e7eb; border-radius:8px; background:#f9fafb;"></div>
+        {% if project_graph.nodes|length == 0 %}
+          <div class="text-center text-gray-500 my-8">No critical or impacted components detected for this scan.</div>
+        {% endif %}
+        <div class="text-xs text-gray-500 mt-2 flex flex-wrap gap-4">
+            <span><span style="display:inline-block;width:12px;height:12px;background:#6366f1;border-radius:2px;margin-right:4px;"></span>File</span>
+            <span><span style="display:inline-block;width:12px;height:12px;background:#38bdf8;border-radius:2px;margin-right:4px;"></span>Class</span>
+            <span><span style="display:inline-block;width:12px;height:12px;background:#f59e0b;border-radius:2px;margin-right:4px;"></span>Function</span>
+            <span><span style="display:inline-block;width:12px;height:12px;background:#ef4444;border-radius:2px;margin-right:4px;"></span>Highlighted: Impacted by PR</span>
+        </div>
+    </div>
+
      {% if pr_request_details.error_message %}
         <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6 rounded-md" role="alert">
             <p class="font-bold">Analysis Error Encountered</p>
@@ -314,14 +336,98 @@
 
 {% block scripts_extra %}
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-    {# Tải thêm các ngôn ngữ cụ thể nếu cần thiết cho highlight.js #}
-    {# Ví dụ: <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script> #}
+    <script src="https://unpkg.com/cytoscape@3.26.0/dist/cytoscape.min.js"></script>
+    <script src="{{ url_for('static', path='js/ckg_graph.js') }}"></script>
     <script>
+    let cy = null;
     document.addEventListener('DOMContentLoaded', (event) => {
-        // Khởi tạo highlight.js cho tất cả các block code có class 'hljs'
-        // Hoặc bạn có thể dùng selector cụ thể hơn: document.querySelectorAll('pre code[class^="language-"]')
         document.querySelectorAll('pre code.hljs').forEach((el) => {
             hljs.highlightElement(el);
+        });
+        // === Project Graph Visualization ===
+        const cyContainer = document.getElementById('project-graph-vis');
+        if (cyContainer && {{ project_graph.nodes|length }} > 0) {
+            const nodes = [
+                {% for n in project_graph.nodes %}
+                {
+                    data: {
+                        id: '{{ n.id }}',
+                        label: ({{ n.labels|tojson }})[0],
+                        name: {{ n.properties.name|tojson if n.properties.name is defined else n.properties.file_path|tojson if n.properties.file_path is defined else n.properties.signature|tojson if n.properties.signature is defined else '""' }},
+                        type: ({{ n.labels|tojson }})[0],
+                    },
+                    classes: [
+                        {% if n.labels[0] == 'File' %}'file'{% elif n.labels[0] == 'Class' %}'class'{% elif n.labels[0] == 'Function' %}'function'{% else %}''{% endif %}
+                        {% if n.id in highlight_node_ids %},'highlighted'{% endif %}
+                    ].join(' ')
+                },
+                {% endfor %}
+            ];
+            const edges = [
+                {% for e in project_graph.edges %}
+                {
+                    data: {
+                        id: '{{ e.id }}',
+                        source: '{{ e.source }}',
+                        target: '{{ e.target }}',
+                        label: '{{ e.type }}',
+                        type: '{{ e.type }}'
+                    }
+                },
+                {% endfor %}
+            ];
+            cy = cytoscape({
+                container: cyContainer,
+                elements: { nodes, edges },
+                style: [
+                    { selector: 'node', style: {
+                        'label': 'data(name)',
+                        'text-valign': 'center',
+                        'text-halign': 'center',
+                        'background-color': '#6366f1',
+                        'color': '#22223b',
+                        'font-size': '10px',
+                        'width': 24, 'height': 24,
+                        'border-width': 2, 'border-color': '#e0e7ef',
+                    }},
+                    { selector: 'node.class', style: { 'background-color': '#38bdf8' } },
+                    { selector: 'node.function', style: { 'background-color': '#f59e0b' } },
+                    { selector: 'node.highlighted', style: { 'background-color': '#ef4444', 'border-color': '#991b1b', 'border-width': 3 } },
+                    { selector: 'edge', style: {
+                        'width': 2,
+                        'line-color': '#b6b6b6',
+                        'target-arrow-color': '#b6b6b6',
+                        'target-arrow-shape': 'triangle',
+                        'curve-style': 'bezier',
+                        'arrow-scale': 1.2,
+                        'label': 'data(label)',
+                        'font-size': '8px',
+                        'color': '#888',
+                        'text-background-color': '#fff',
+                        'text-background-opacity': 0.7,
+                        'text-background-padding': 2,
+                    }},
+                ],
+                layout: { name: 'cose', animate: true, fit: true, padding: 30 }
+            });
+        }
+        // Zoom in/out buttons
+        const zoomInBtn = document.getElementById('zoom-in-btn');
+        const zoomOutBtn = document.getElementById('zoom-out-btn');
+        if (zoomInBtn && zoomOutBtn) {
+            zoomInBtn.onclick = function() {
+                if (cy) cy.zoom({ level: cy.zoom() * 1.2, renderedPosition: { x: cy.width()/2, y: cy.height()/2 } });
+            };
+            zoomOutBtn.onclick = function() {
+                if (cy) cy.zoom({ level: cy.zoom() / 1.2, renderedPosition: { x: cy.width()/2, y: cy.height()/2 } });
+            };
+        }
+        // You may need to pass the correct project_graph_id from your backend context
+        const projectGraphId = '{{ pr_request_details.project_graph_id or project.graph_id }}';
+        window.CKGGraph.init({
+            project_graph_id: projectGraphId,
+            mode: 'pr_impact',
+            // Optionally pass changed_node_ids, depth, etc.
         });
     });
     

@@ -13,10 +13,27 @@ from .parsers import get_code_parser, ParsedFileResult, ExtractedFunction, Extra
 logger = logging.getLogger(__name__)
 
 class CKGBuilder:
-    def __init__(self, project_model: Project, neo4j_driver: Optional[AsyncDriver] = None):
+    def __init__(self, project_model: Project, neo4j_driver: Optional[AsyncDriver] = None, project_graph_id: Optional[str] = None):
         self.project = project_model
-        self.project_graph_id = f"novaguard_project_{self.project.id}"
+        self.project_graph_id = project_graph_id or f"novaguard_project_{self.project.id}"
         self._driver = neo4j_driver
+
+    @staticmethod
+    def generate_scan_specific_graph_id(project_id: int, scan_type: str, scan_id: int) -> str:
+        """
+        Generate a unique project_graph_id for a specific scan.
+        
+        Args:
+            project_id: The SQL project ID
+            scan_type: Either 'full_scan' or 'pr_analysis'
+            scan_id: The ID of the specific scan request
+            
+        Returns:
+            A unique graph ID string
+        """
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        return f"novaguard_project_{project_id}_{scan_type}_{scan_id}_{timestamp}"
 
     async def _get_driver(self) -> AsyncDriver:
         if self._driver and hasattr(self._driver, '_closed') and not self._driver._closed:

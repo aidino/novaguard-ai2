@@ -869,6 +869,22 @@ async def process_message_logic(message_value: dict, db: Session, settings_obj: 
             crud_pr_analysis.update_pr_analysis_request_status(db, pr_analysis_request_id, PRAnalysisStatus.DATA_FETCHED)
             logger.info(f"PML (PR): PR ID {pr_analysis_request_id} status updated to DATA_FETCHED. Preparing for LLM analysis.")
 
+            # Generate unique project_graph_id for this PR scan
+            unique_graph_id = CKGBuilder.generate_scan_specific_graph_id(
+                project_id=db_project.id,
+                scan_type="pr_analysis", 
+                scan_id=pr_analysis_request_id
+            )
+            
+            # Store the project_graph_id in the database
+            crud_pr_analysis.update_pr_analysis_project_graph_id(db, pr_analysis_request_id, unique_graph_id)
+            logger.info(f"PML (PR): Generated and stored unique project_graph_id '{unique_graph_id}' for PR ID {pr_analysis_request_id}")
+            
+            # Build CKG with the unique graph ID for this PR
+            # Note: For PR analysis, you might want to build CKG from the PR's changed code
+            # For now, we'll create a CKGBuilder instance with the unique graph ID
+            # You may need to implement PR-specific CKG building logic here
+
             dynamic_context = create_dynamic_project_context(raw_pr_data, db_project, db_pr_request)
             dynamic_context["raw_pr_data_changed_files"] = raw_pr_data.get("changed_files", [])
             
@@ -1028,6 +1044,17 @@ async def process_message_logic(message_value: dict, db: Session, settings_obj: 
             db.refresh(db_full_scan_request)
             logger.info(f"PML (FullScan): Updated Request ID {full_scan_request_id} to PROCESSING.")
 
+        # Generate unique project_graph_id for this full scan
+        unique_full_scan_graph_id = CKGBuilder.generate_scan_specific_graph_id(
+            project_id=db_project_model.id,
+            scan_type="full_scan", 
+            scan_id=full_scan_request_id
+        )
+        
+        # Store the project_graph_id in the database
+        crud_full_scan.update_full_scan_project_graph_id(db, full_scan_request_id, unique_full_scan_graph_id)
+        logger.info(f"PML (FullScan): Generated and stored unique project_graph_id '{unique_full_scan_graph_id}' for Request ID {full_scan_request_id}")
+
         github_token = decrypt_data(db_user_model.github_access_token_encrypted)
         if not github_token:
             error_msg = f"Full Project Scan: GitHub token decryption failed for User ID {user_id} (Request ID {full_scan_request_id})."
@@ -1084,7 +1111,7 @@ async def process_message_logic(message_value: dict, db: Session, settings_obj: 
 
 
             # === Bước 2: Xây dựng/Cập nhật CKG (Nếu chưa làm hoặc làm lại) ===
-            ckg_builder_instance = CKGBuilder(project_model=db_project_model) # Luôn cần CKGBuilder
+            ckg_builder_instance = CKGBuilder(project_model=db_project_model, project_graph_id=unique_full_scan_graph_id) # Use unique graph ID
             if db_full_scan_request.status not in [FullProjectAnalysisStatus.CKG_BUILDING, FullProjectAnalysisStatus.ANALYZING]:
                 # Nếu chưa build CKG hoặc resume từ source_fetched
                 crud_full_scan.update_full_scan_request_status(db, full_scan_request_id, FullProjectAnalysisStatus.CKG_BUILDING)

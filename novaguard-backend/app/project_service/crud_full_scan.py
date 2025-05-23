@@ -95,3 +95,24 @@ def get_full_scan_requests_for_project(
 
 def count_full_scan_requests_for_project(db: Session, project_id: int) -> int:
     return db.query(func.count(FullProjectAnalysisRequest.id)).filter(FullProjectAnalysisRequest.project_id == project_id).scalar() or 0
+
+def update_full_scan_project_graph_id(
+    db: Session, 
+    request_id: int, 
+    project_graph_id: str
+) -> Optional[FullProjectAnalysisRequest]:
+    """
+    Update the project_graph_id for a full project analysis request.
+    This is called by the analysis worker when it builds the CKG.
+    """
+    db_request = get_full_scan_request_by_id(db, request_id)
+    if db_request:
+        db_request.project_graph_id = project_graph_id
+        try:
+            db.commit()
+            db.refresh(db_request)
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error updating project_graph_id for FullProjectAnalysisRequest (ID: {request_id}): {e}", exc_info=True)
+            return None
+    return db_request
