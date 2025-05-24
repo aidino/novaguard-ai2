@@ -23,6 +23,9 @@ class PRAnalysisRequest(Base):
     pr_github_url = Column(String(2048), nullable=True)
     head_sha = Column(String(40), nullable=True) # SHA của commit cuối cùng trong PR
     
+    # Store the specific CKG identifier for this PR analysis
+    project_graph_id = Column(String(255), nullable=True, index=True)
+    
     # Sử dụng SQLAlchemy Enum để ràng buộc giá trị của status
     status = Column(SQLAlchemyEnum(PRAnalysisStatus, 
                                 name="pr_analysis_status_enum", # Tên của kiểu ENUM trong DB

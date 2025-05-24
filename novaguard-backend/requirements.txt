@@ -1,27 +1,82 @@
-fastapi[all]
-uvicorn[standard]
-sqlalchemy
-psycopg2-binary # PostgreSQL adapter for Python
-passlib[bcrypt] # For password hashing
-python-jose[cryptography] # For JWT tokens
-python-multipart # For handling form data (needed by fastapi[all] or for OAuth2 password flow)
-pydantic-settings # For managing settings/configurations
-kafka-python
-# confluent-kafka
-jinja2
-python-multipart # Đã có, nhưng cần cho form HTML
-itsdangerous
+# Production dependencies for NovaGuard Android Analysis API
 
-langchain
-langchain-core
-langchain-community
-langchain-ollama # Để làm việc với Ollama
-langchain-openai
-langchain-google-genai
-# langgraph (nếu bạn muốn sử dụng ngay, nhưng có thể thêm sau khi có nhiều agent)
-# PyYAML (nếu bạn định dùng file prompt YAML, cho .txt thì không cần)
-GitPython
-neo4j>=5.0
-tree-sitter==0.21.0
-# tree-sitter-languages==1.10.2
-tree-sitter-languages==1.9.1
+# FastAPI and server
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# HTTP client
+httpx==0.25.2
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-mock==3.12.0
+
+# Tree-sitter for code parsing
+tree-sitter==0.20.4
+
+# Data processing
+pandas==2.1.3
+numpy==1.24.4
+
+# Async and concurrency
+asyncio
+concurrent.futures
+
+# Configuration and environment
+python-dotenv==1.0.0
+
+# Logging and monitoring
+structlog==23.2.0
+prometheus-client==0.19.0
+
+# Database (SQLite for development, PostgreSQL for production)
+sqlalchemy==2.0.23
+alembic==1.13.0
+sqlite3  # Built-in
+psycopg2-binary==2.9.9  # PostgreSQL adapter
+
+# Caching and task queue
+redis==5.0.1
+celery==5.3.4
+
+# Security
+cryptography==41.0.8
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+
+# CORS and middleware
+python-multipart==0.0.6
+
+# Development tools (optional in production)
+black==23.11.0
+flake8==6.1.0
+mypy==1.7.1
+pre-commit==3.6.0
+
+# Documentation
+mkdocs==1.5.3
+mkdocs-material==9.4.8
+
+# Optional: Machine learning (for future LLM integration)
+# openai==1.3.5
+# langchain==0.0.340
+# transformers==4.35.2
+# torch==2.1.1
+
+# Optional: Monitoring and observability
+# sentry-sdk[fastapi]==1.38.0
+# opentelemetry-api==1.21.0
+# opentelemetry-sdk==1.21.0
+
+# Optional: Additional parsing libraries
+# lxml==4.9.3
+# beautifulsoup4==4.12.2
+
+# Production server (alternative to uvicorn)
+# gunicorn==21.2.0
+
+# Static files serving
+# aiofiles==23.2.1

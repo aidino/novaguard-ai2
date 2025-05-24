@@ -57,6 +57,8 @@ class AnalysisFinding(Base):
     module_name = Column(String(255), nullable=True, comment="Module name if finding is module-level")
     meta_data = Column(JSON, nullable=True, comment="Additional structured data as JSON")
 
+    # Field for graceful degradation when LLM output cannot be parsed
+    raw_llm_content = Column(Text, nullable=True, comment="Raw LLM output when JSON parsing fails, for graceful degradation and manual review")
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

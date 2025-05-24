@@ -1,12 +1,29 @@
-# novaguard-ai2/novaguard-backend/app/ckg_builder/parsers.py
+# novaguard-backend/app/ckg_builder/parsers.py
 import logging
-from typing import List, Dict, Any, Tuple, Optional, Set
+from typing import List, Dict, Any, Tuple, Optional, Set, Union
 from tree_sitter import Language, Parser, Node, Query # type: ignore
 from tree_sitter_languages import get_language
 
 logger = logging.getLogger(__name__)
 
-# --- Data Structures (giữ nguyên) ---
+# --- Data Structures (Giữ nguyên như lần cập nhật trước) ---
+class ExtractedVariable:
+    def __init__(self, name: str, start_line: int, end_line: int,
+                scope_name: str,
+                scope_type: str, # e.g., "parameter", "local_variable", "global_variable", "class_attribute"
+                var_type: Optional[str] = None,
+                is_parameter: bool = False):
+        self.name = name
+        self.start_line = start_line
+        self.end_line = end_line
+        self.scope_name = scope_name
+        self.scope_type = scope_type
+        self.var_type = var_type
+        self.is_parameter = is_parameter
+
+    def __repr__(self):
+        return f"ExtractedVariable(name='{self.name}', scope='{self.scope_name}', type='{self.scope_type}')"
+
 class ExtractedFunction:
     def __init__(self, name: str, start_line: int, end_line: int, signature: Optional[str] = None, class_name: Optional[str] = None, body_node: Optional[Node] = None, parameters_str: Optional[str] = None):
         self.name = name
@@ -17,6 +34,17 @@ class ExtractedFunction:
         self.class_name = class_name
         self.body_node = body_node
         self.calls: Set[Tuple[str, Optional[str], Optional[str], int]] = set()
+        self.parameters: List[ExtractedVariable] = []
+        self.local_variables: List[ExtractedVariable] = []
+        self.decorators: List[str] = []
+        self.raised_exceptions: Set[str] = set()
+        self.handled_exceptions: Set[str] = set()
+        self.uses_variables: Set[Tuple[str, int]] = set()
+        self.modifies_variables: Set[Tuple[str, int, str]] = set()
+        self.created_objects: Set[Tuple[str, int]] = set()
+
+    def __repr__(self):
+        return f"ExtractedFunction(name='{self.name}', class='{self.class_name}', lines={self.start_line}-{self.end_line})"
 
 class ExtractedClass:
     def __init__(self, name: str, start_line: int, end_line: int, body_node: Optional[Node] = None):
@@ -26,12 +54,23 @@ class ExtractedClass:
         self.body_node = body_node
         self.methods: List[ExtractedFunction] = []
         self.superclasses: Set[str] = set()
+        self.attributes: List[ExtractedVariable] = []
+        self.decorators: List[str] = []
+
+    def __repr__(self):
+        return f"ExtractedClass(name='{self.name}', lines={self.start_line}-{self.end_line})"
 
 class ExtractedImport:
-    def __init__(self, import_type: str, module_path: Optional[str] = None, imported_names: Optional[List[Tuple[str, Optional[str]]]] = None):
+    def __init__(self, import_type: str, start_line: int, end_line: int, module_path: Optional[str] = None, imported_names: Optional[List[Tuple[str, Optional[str]]]] = None, relative_level: int = 0):
         self.import_type = import_type
+        self.start_line = start_line
+        self.end_line = end_line
         self.module_path = module_path
         self.imported_names = imported_names if imported_names else []
+        self.relative_level = relative_level
+
+    def __repr__(self):
+        return f"ExtractedImport(type='{self.import_type}', module='{self.module_path}', names='{self.imported_names}')"
 
 class ParsedFileResult:
     def __init__(self, file_path: str, language: str):
@@ -40,8 +79,13 @@ class ParsedFileResult:
         self.functions: List[ExtractedFunction] = []
         self.classes: List[ExtractedClass] = []
         self.imports: List[ExtractedImport] = []
+        self.global_variables: List[ExtractedVariable] = []
+
+    def __repr__(self):
+        return f"ParsedFileResult(file='{self.file_path}', lang='{self.language}')"
 
 class BaseCodeParser:
+    # (Giữ nguyên như đã cung cấp trước đó)
     def __init__(self, language_name: str):
         self.language_name = language_name
         try:
@@ -60,8 +104,61 @@ class BaseCodeParser:
         try:
             tree = self.parser.parse(bytes(code_content, "utf8"))
             result = ParsedFileResult(file_path=file_path, language=self.language_name)
+
             if tree.root_node.has_error:
-                logger.warning(f"Syntax errors found in file {file_path} during parsing. CKG data might be incomplete.")
+                error_node_found = False
+                first_error_node_info = "Unknown error location"
+                error_details = []
+                
+                def find_error_nodes(node: Node, max_errors: int = 3):
+                    nonlocal error_node_found, first_error_node_info, error_details
+                    if len(error_details) >= max_errors:
+                        return
+                        
+                    if node.type == 'ERROR' or node.is_missing:
+                        error_node_found = True
+                        line_num = max(1, self._get_line_number(node))  # Ensure line is at least 1
+                        error_text = self._get_node_text(node) or "<unknown>"
+                        
+                        # Get more context about the error
+                        context_info = ""
+                        if node.parent:
+                            parent_text = self._get_node_text(node.parent)
+                            if parent_text and len(parent_text) > 10:
+                                context_info = f" in {parent_text[:30]}..."
+                        
+                        error_info = f"type: {node.type}, line: {line_num}{context_info}"
+                        
+                        if not first_error_node_info or first_error_node_info == "Unknown error location":
+                            first_error_node_info = error_info
+                            
+                        error_details.append({
+                            "type": node.type,
+                            "line": line_num,
+                            "text": error_text[:50] + "..." if len(error_text) > 50 else error_text,
+                            "context": context_info
+                        })
+                        return
+                        
+                    for child_node in node.children:
+                        if len(error_details) >= max_errors:
+                            break
+                        find_error_nodes(child_node, max_errors)
+                
+                find_error_nodes(tree.root_node)
+                
+                # Log detailed error information but continue parsing
+                if error_details:
+                    error_summary = ", ".join([f"L{err['line']}:{err['type']}" for err in error_details])
+                    logger.debug(
+                        f"Syntax errors in {file_path} "
+                        f"(errors at: {error_summary}). Attempting partial parsing."
+                    )
+                else:
+                    logger.debug(
+                        f"Syntax errors in {file_path} (e.g., near {first_error_node_info}). "
+                        f"Attempting partial parsing."
+                    )
             self._extract_entities(tree.root_node, result)
             return result
         except Exception as e:
@@ -72,7 +169,7 @@ class BaseCodeParser:
         raise NotImplementedError("Subclasses must implement _extract_entities")
 
     def _get_node_text(self, node: Optional[Node]) -> Optional[str]:
-        return node.text.decode('utf8') if node else None
+        return node.text.decode('utf8').strip() if node and node.text else None
 
     def _get_line_number(self, node: Node) -> int:
         return node.start_point[0] + 1
@@ -80,282 +177,692 @@ class BaseCodeParser:
     def _get_end_line_number(self, node: Node) -> int:
         return node.end_point[0] + 1
 
+
 class PythonParser(BaseCodeParser):
+
+    QUERY_DEFINITIONS = {
+        # SỬA imports_query
+        "imports_query": """
+            [
+              (import_statement) @import_node
+              (import_from_statement) @import_node
+            ]
+        """,
+        "definitions_query": """
+            [
+              (class_definition) @definition_node
+              (function_definition) @definition_node
+              (expression_statement
+                (assignment
+                  left: (identifier) @global_var_name_in_expr_stmt_ass
+                )
+              ) @global_assignment_in_expr_stmt
+              (assignment
+                left: (identifier) @global_var_name_in_direct_ass
+              ) @direct_global_assignment
+            ]
+        """,
+        "body_assignments_query": """
+            (assignment
+                left: (_) @assignment_target_node
+                right: (_) @assignment_value_node
+            ) @assignment_expr
+        """,
+        "body_augmented_assignments_query": """
+            (augmented_assignment
+                left: (_) @aug_assignment_target_node
+                right: (_) @aug_assignment_value_node
+            ) @aug_assignment_expr
+        """,
+        "body_identifiers_query": """
+            (identifier) @id_node
+        """,
+        "body_calls_query": """
+            (call
+                function: (_) @call_function_node
+                arguments: (_) @call_arguments_node
+            ) @call_expr
+        """
+    }
+
     def __init__(self):
         super().__init__("python")
-        self.queries = {
-            "imports": self.lang_object.query("""
-                (import_statement
-                  name: [
-                    (dotted_name) @module_path
-                    (aliased_import name: (dotted_name) @module_path alias: (identifier) @alias)
-                  ]
-                ) @import_direct_statement
+        self.queries: Dict[str, Query] = {}
+        for query_name, query_string in self.QUERY_DEFINITIONS.items():
+            try:
+                self.queries[query_name] = self.lang_object.query(query_string)
+                logger.debug(f"PythonParser: Query '{query_name}' compiled successfully.")
+            except Exception as e:
+                logger.error(f"PythonParser: CRITICAL - Error compiling query '{query_name}': {type(e).__name__} - {e}. This query will NOT be available.", exc_info=False)
+        
+        if not self.queries:
+            logger.error("PythonParser initialized, but NO queries were compiled successfully. Parser will be largely ineffective.")
+        elif len(self.queries) < len(self.QUERY_DEFINITIONS):
+            logger.warning("PythonParser initialized with SOME query compilation errors. CKG features might be incomplete.")
+        else:
+            logger.info("PythonParser: All defined queries compiled successfully.")
 
-                (import_from_statement
-                  module_name: (dotted_name)? @from_module_path
-                  name: [
-                    (wildcard_import) @wildcard
-                    (dotted_name) @imported_name
-                    (aliased_import name: (dotted_name) @imported_name alias: (identifier) @imported_alias)
-                  ]
-                ) @import_from_statement
-            """),
-            "classes": self.lang_object.query("""
-                (class_definition
-                    name: (identifier) @class.name
-                    superclasses: (argument_list . (_) @superclass)?
-                    body: (block) @class.body
-                ) @class.definition
-            """),
-            "functions_and_methods": self.lang_object.query("""
-                (function_definition
-                    name: (identifier) @function.name
-                    parameters: (parameters) @function.parameters
-                    return_type: (type)? @function.return_type
-                    body: (block) @function.body
-                ) @function.definition
-            """),
-            "calls": self.lang_object.query("""
-                (call
-                    function: [
-                        (identifier) @func_name_direct
-                        (attribute object: (identifier) @obj_name attribute: (identifier) @method_name)
-                        (attribute object: (call) @chained_call_obj attribute: (identifier) @method_name)
-                        (attribute object: (subscript) @subscript_obj attribute: (identifier) @method_name)
-                        (attribute object: (attribute) @nested_attr_obj attribute: (identifier) @method_name)
-                    ]
-                    arguments: (_)? @arguments
-                ) @call_expression
-            """)
-        }
-        logger.info("PythonParser initialized.")
 
-    def _process_match_item(self, query_obj: Query, match_as_tuple: Any,
-                                main_capture_names_without_at: List[str]) -> Tuple[Optional[Node], Dict[str, List[Node]]]:
-        """
-        Helper to process captures from a match item.
-        Assumes match_as_tuple is a tuple: (pattern_index, dict_of_captures).
-        dict_of_captures maps capture_name (e.g. "module_path" or "@module_path") to List[Node] or a single Node.
-        main_capture_names_without_at should be like ["import_direct_statement"] (no '@').
-        Returns:
-            - main_node: The first node associated with any name in main_capture_names_without_at.
-            - validated_captures_map: A dict where keys are capture names *without* '@' prefix,
-                                      and values are always List[Node].
-        """
-        if not (isinstance(match_as_tuple, tuple) and len(match_as_tuple) == 2):
-            logger.warning(f"CKG Parser: Item from 'matches' iterator is not a 2-element tuple: type {type(match_as_tuple)}, len {len(match_as_tuple) if isinstance(match_as_tuple, tuple) else 'N/A'}. Skipping.")
-            return None, {}
+    def _get_query(self, query_name: str) -> Optional[Query]:
+        return self.queries.get(query_name)
 
-        _pattern_index = match_as_tuple[0]
-        captures_map_from_iterator = match_as_tuple[1]
+    def _parse_decorators(self, node_with_decorators: Node) -> List[str]:
+        # (Giữ nguyên logic)
+        decorators = []
+        for child in node_with_decorators.children:
+            if child.type == "decorator":
+                decorator_expr_node = child.child(0)
+                if decorator_expr_node:
+                    decorator_text = self._get_node_text(decorator_expr_node)
+                    if decorator_expr_node.type == "call": 
+                        func_node = decorator_expr_node.child_by_field_name("function")
+                        if func_node:
+                            decorator_text = self._get_node_text(func_node)
+                    if decorator_text:
+                        decorators.append(decorator_text)
+        return decorators
 
-        if not isinstance(captures_map_from_iterator, dict):
-            logger.error(f"CKG Parser: Second element of match tuple is not a dict as expected, got {type(captures_map_from_iterator)}. This suggests an issue with tree-sitter's output interpretation. Skipping match.")
-            return None, {}
+    def _parse_parameters_node(self, parameters_node: Optional[Node], owner_func_name: str) -> Tuple[List[ExtractedVariable], str]:
+        # (Giữ nguyên logic)
+        params_list: List[ExtractedVariable] = []
+        raw_params_text = self._get_node_text(parameters_node) if parameters_node else "()"
 
-        main_node: Optional[Node] = None
-        validated_captures_map: Dict[str, List[Node]] = {}
+        if not parameters_node:
+            return params_list, raw_params_text
 
-        for raw_capture_key, captured_value in captures_map_from_iterator.items():
-            if not isinstance(raw_capture_key, str):
-                logger.warning(f"CKG Parser: Invalid capture key type '{type(raw_capture_key)}'. Expected string. Skipping.")
+        for child in parameters_node.children:
+            param_name: Optional[str] = None
+            param_type_hint: Optional[str] = None
+            node_for_lines = child
+
+            if child.type == "identifier":
+                param_name = self._get_node_text(child)
+            elif child.type == "typed_parameter":
+                name_node = child.child_by_field_name("name")
+                type_node = child.child_by_field_name("type")
+                if name_node: param_name = self._get_node_text(name_node); node_for_lines = name_node
+                if type_node: param_type_hint = self._get_node_text(type_node)
+            elif child.type == "default_parameter":
+                name_node = child.child_by_field_name("name")
+                type_node = child.child_by_field_name("type")
+                if name_node: param_name = self._get_node_text(name_node); node_for_lines = name_node
+                if type_node: param_type_hint = self._get_node_text(type_node)
+            elif child.type in ["list_splat_parameter", "list_splat_pattern", "splat_argument"]:
+                id_node = child.child_by_field_name("name") or child.child(0)
+                if id_node and id_node.type == "identifier":
+                    param_name = "*" + self._get_node_text(id_node)
+                    node_for_lines = id_node
+                elif self._get_node_text(child) == "*":
+                    continue
+            elif child.type in ["dictionary_splat_parameter", "dictionary_splat_pattern", "keyword_argument"]:
+                id_node = child.child_by_field_name("name") or child.child(0)
+                if id_node and id_node.type == "identifier":
+                    param_name = "**" + self._get_node_text(id_node)
+                    node_for_lines = id_node
+            elif child.type in ['(', ')', ',','keyword_separator', 'positional_separator']:
                 continue
 
-            nodes_list_for_key: List[Node] = []
-            if isinstance(captured_value, Node): # If it's a single Node, wrap it in a list
-                nodes_list_for_key = [captured_value]
-            elif isinstance(captured_value, list) and all(isinstance(n, Node) for n in captured_value): # If it's already a list of Nodes
-                nodes_list_for_key = captured_value
-            else: # Unexpected type for captured_value
-                logger.warning(f"CKG Parser: Value for capture key '{raw_capture_key}' is not a Node or List[Node]. Got type {type(captured_value)}. Skipping this capture entry.")
-                continue 
-            
-            normalized_key = raw_capture_key[1:] if raw_capture_key.startswith('@') else raw_capture_key
-            validated_captures_map[normalized_key] = nodes_list_for_key
-            
-            if main_capture_names_without_at and normalized_key in main_capture_names_without_at:
-                if nodes_list_for_key: 
-                    if main_node is None:
-                        main_node = nodes_list_for_key[0]
-        
-        if main_capture_names_without_at and not main_node:
-             logger.debug(f"CKG Parser: Main node not found for specified main_capture_names: {main_capture_names_without_at} in captures: {list(validated_captures_map.keys())}")
+            if param_name:
+                params_list.append(ExtractedVariable(
+                    name=param_name,
+                    start_line=self._get_line_number(node_for_lines),
+                    end_line=self._get_end_line_number(node_for_lines),
+                    scope_name=owner_func_name, scope_type="parameter",
+                    var_type=param_type_hint, is_parameter=True
+                ))
+        return params_list, raw_params_text
 
-        return main_node, validated_captures_map
+    def _extract_body_details(self, body_node: Optional[Node], owner_function: ExtractedFunction, result: ParsedFileResult):
+        # (Giữ nguyên logic như phiên bản sửa lỗi TypeError trước đó)
+        if not body_node:
+            return
 
-    def _extract_imports(self, root_node: Node, result: ParsedFileResult):
-        query_obj = self.queries["imports"]
-        processed_statement_node_ids = set()
+        param_names = {p.name for p in owner_function.parameters}
+        current_local_var_names = {lv.name for lv in owner_function.local_variables}
 
-        for match_as_tuple in query_obj.matches(root_node):
-            main_statement_node, captures_dict = self._process_match_item(
-                query_obj, match_as_tuple, ["import_direct_statement", "import_from_statement"]
-            )
-            if not main_statement_node: continue
-            if main_statement_node.id in processed_statement_node_ids: continue
-            processed_statement_node_ids.add(main_statement_node.id)
+        assignment_query = self._get_query("body_assignments_query")
+        if assignment_query:
+            for pattern_idx, captures_dict in assignment_query.matches(body_node):
+                assignment_expr_node = captures_dict.get("assignment_expr")
+                target_node = captures_dict.get("assignment_target_node")
+                value_node = captures_dict.get("assignment_value_node")
 
-            if main_statement_node.type == "import_statement":
-                module_path_nodes = captures_dict.get("module_path", [])
-                alias_nodes = captures_dict.get("alias", [])
-                if module_path_nodes: # Ensure list is not empty
-                    module_path_text = self._get_node_text(module_path_nodes[0])
-                    alias_text = self._get_node_text(alias_nodes[0]) if alias_nodes else None
-                    if alias_text and module_path_text:
-                         result.imports.append(ExtractedImport("direct_alias", module_path_text, [(module_path_text, alias_text)]))
-                    elif module_path_text:
-                        result.imports.append(ExtractedImport("direct", module_path_text, [(module_path_text, None)]))
+                if not assignment_expr_node or not target_node: continue
+                line_num = self._get_line_number(assignment_expr_node)
 
-            elif main_statement_node.type == "import_from_statement":
-                from_module_path_node_list = captures_dict.get("from_module_path", [])
-                from_module_path_text = self._get_node_text(from_module_path_node_list[0]) if from_module_path_node_list else None
+                if target_node.type == "identifier":
+                    var_name = self._get_node_text(target_node)
+                    if var_name:
+                        owner_function.modifies_variables.add((var_name, line_num, "assignment"))
+                        if var_name not in param_names and var_name not in current_local_var_names:
+                            owner_function.local_variables.append(ExtractedVariable(
+                                name=var_name, start_line=self._get_line_number(target_node),
+                                end_line=self._get_end_line_number(target_node),
+                                scope_name=owner_function.name, scope_type="local_variable"
+                            ))
+                            current_local_var_names.add(var_name)
+                elif target_node.type == "attribute":
+                    obj_node = target_node.child_by_field_name("object")
+                    attr_node = target_node.child_by_field_name("attribute")
+                    obj_name = self._get_node_text(obj_node)
+                    attr_name = self._get_node_text(attr_node)
+                    if obj_name and attr_name:
+                        full_attr_name = f"{obj_name}.{attr_name}"
+                        owner_function.modifies_variables.add((full_attr_name, line_num, "attribute_assignment"))
                 
-                if "wildcard" in captures_dict:
-                    result.imports.append(ExtractedImport("from_wildcard", from_module_path_text, [("*", None)]))
+                if value_node:
+                    self._find_used_identifiers(value_node, owner_function, param_names, current_local_var_names, result)
+        
+        aug_assignment_query = self._get_query("body_augmented_assignments_query")
+        if aug_assignment_query:
+            for pattern_idx, captures_dict in aug_assignment_query.matches(body_node):
+                aug_expr_node = captures_dict.get("aug_assignment_expr")
+                target_node = captures_dict.get("aug_assignment_target_node")
+                value_node = captures_dict.get("aug_assignment_value_node")
+
+                if not aug_expr_node or not target_node: continue
+                line_num = self._get_line_number(aug_expr_node)
+                
+                target_name_aug: Optional[str] = None
+                if target_node.type == "identifier":
+                    target_name_aug = self._get_node_text(target_node)
+                elif target_node.type == "attribute":
+                    obj_node = target_node.child_by_field_name("object")
+                    attr_node = target_node.child_by_field_name("attribute")
+                    obj_name = self._get_node_text(obj_node)
+                    attr_name = self._get_node_text(attr_node)
+                    if obj_name and attr_name:
+                        target_name_aug = f"{obj_name}.{attr_name}"
+                
+                if target_name_aug:
+                    owner_function.modifies_variables.add((target_name_aug, line_num, "augmented_assignment"))
+                    owner_function.uses_variables.add((target_name_aug, line_num))
+
+                if value_node:
+                    self._find_used_identifiers(value_node, owner_function, param_names, current_local_var_names, result)
+
+        call_query = self._get_query("body_calls_query")
+        if call_query:
+            for pattern_idx, captures_dict in call_query.matches(body_node):
+                call_expr_node = captures_dict.get("call_expr")
+                function_node = captures_dict.get("call_function_node")
+                arguments_node = captures_dict.get("call_arguments_node")
+
+                if not call_expr_node or not function_node: continue
+                line_num = self._get_line_number(call_expr_node)
+
+                if arguments_node:
+                    self._find_used_identifiers(arguments_node, owner_function, param_names, current_local_var_names, result)
+
+                called_name_str: Optional[str] = None
+                base_object_name_str: Optional[str] = None
+                call_type = "unknown_call"
+
+                if function_node.type == "identifier":
+                    called_name_str = self._get_node_text(function_node)
+                    if called_name_str and any(c.name == called_name_str for c in result.classes):
+                        call_type = "constructor_call"
+                        owner_function.created_objects.add((called_name_str, line_num))
+                    else:
+                        is_imported_class_constructor = False
+                        if called_name_str:
+                            for imp_item in result.imports:
+                                if imp_item.import_type.startswith("from"):
+                                    for name_orig, name_alias in imp_item.imported_names:
+                                        actual_imp_name = name_alias if name_alias else name_orig
+                                        if actual_imp_name == called_name_str and actual_imp_name[0].isupper():
+                                            owner_function.created_objects.add((actual_imp_name, line_num))
+                                            is_imported_class_constructor = True; call_type = "constructor_call_imported_from"; break
+                                if is_imported_class_constructor: break
+                        if not is_imported_class_constructor:
+                            call_type = "direct_function_call"
+
+                elif function_node.type == "attribute":
+                    base_obj_node = function_node.child_by_field_name("object")
+                    attr_method_node = function_node.child_by_field_name("attribute")
+                    base_object_name_str = self._get_node_text(base_obj_node)
+                    called_name_str = self._get_node_text(attr_method_node)
+
+                    if base_object_name_str == "self": call_type = "instance_method_call"
+                    elif owner_function.class_name and base_object_name_str == owner_function.class_name: call_type = "class_method_call_on_own_class"
+                    elif base_object_name_str and any(c.name == base_object_name_str for c in result.classes):
+                        call_type = "class_method_call_on_other_class"
+                        if called_name_str and called_name_str[0].isupper():
+                             owner_function.created_objects.add((called_name_str, line_num))
+                    else: 
+                        call_type = "method_call_on_object"
+                        is_constructor_via_module = False
+                        if base_object_name_str and called_name_str and called_name_str[0].isupper():
+                            for imp_item in result.imports: 
+                                if imp_item.import_type == "direct" or imp_item.import_type == "direct_alias":
+                                    for name_orig, name_alias in imp_item.imported_names:
+                                        actual_mod_name = name_alias if name_alias else name_orig
+                                        if actual_mod_name == base_object_name_str:
+                                            owner_function.created_objects.add((called_name_str, line_num))
+                                            is_constructor_via_module = True; call_type = "constructor_call_module_attr"; break
+                                    if is_constructor_via_module: break
+                        if is_constructor_via_module and base_object_name_str: 
+                             owner_function.uses_variables.add((base_object_name_str, line_num))
+                elif function_node.type == "subscript":
+                    called_name_str = self._get_node_text(function_node)
+                    base_sub_node = function_node.child_by_field_name("value")
+                    base_object_name_str = self._get_node_text(base_sub_node)
+                    call_type = "subscripted_call"
                 else:
-                    imported_items_from: List[Tuple[str, Optional[str]]] = []
-                    name_field_container_node = main_statement_node.child_by_field_name('name')
-                    if name_field_container_node:
-                        for item_node in name_field_container_node.named_children:
-                            if item_node.type == "dotted_name":
-                                imported_name = self._get_node_text(item_node)
-                                if imported_name: imported_items_from.append((imported_name, None))
-                            elif item_node.type == "aliased_import":
-                                original_name_node = item_node.child_by_field_name("name")
-                                alias_node = item_node.child_by_field_name("alias")
-                                if original_name_node and alias_node:
-                                    original_name, alias_name = self._get_node_text(original_name_node), self._get_node_text(alias_node)
-                                    if original_name: imported_items_from.append((original_name, alias_name))
-                    if imported_items_from:
-                         result.imports.append(ExtractedImport("from", from_module_path_text, imported_items_from))
+                    called_name_str = self._get_node_text(function_node)
+                    call_type = f"complex_call_{function_node.type}"
 
-    def _extract_calls(self, scope_node: Node, current_owner_entity: ExtractedFunction, result: ParsedFileResult):
-        if not scope_node: return
-        query_obj_calls = self.queries["calls"]
-        for match_as_tuple in query_obj_calls.matches(scope_node):
-            call_expression_node, captures_dict = self._process_match_item(
-                query_obj_calls, match_as_tuple, ["call_expression"]
+                if called_name_str:
+                    owner_function.calls.add((called_name_str, base_object_name_str, call_type, line_num))
+        
+        id_query = self._get_query("body_identifiers_query")
+        if id_query:
+            for pattern_idx, captures_dict in id_query.matches(body_node):
+                id_node = captures_dict.get("id_node")
+                if id_node:
+                    var_name = self._get_node_text(id_node)
+                    if self._is_variable_usage_context(id_node, var_name, owner_function, param_names, current_local_var_names, result):
+                        owner_function.uses_variables.add((var_name, self._get_line_number(id_node)))
+
+    def _is_variable_usage_context(self, id_node: Node, var_name: Optional[str],
+                                   owner_function: ExtractedFunction,
+                                   param_names: Set[str],
+                                   local_var_names: Set[str],
+                                   result: ParsedFileResult) -> bool:
+        # (Giữ nguyên logic)
+        if not var_name or var_name == "self": return False
+        parent = id_node.parent
+        if not parent: return False
+        if parent.type == "function_definition" and parent.child_by_field_name("name") == id_node: return False
+        if parent.type == "class_definition" and parent.child_by_field_name("name") == id_node: return False
+        if parent.type in ["parameters", "typed_parameter", "default_parameter"] and \
+           (parent.child_by_field_name("name") == id_node or (parent.type == "identifier" and parent == id_node and parent.parent and parent.parent.type in ["parameters", "typed_parameter", "default_parameter"])): return False
+        grandparent = parent.parent
+        if parent.type == "assignment" and parent.child_by_field_name("left") == id_node: return False
+        if parent.type == "augmented_assignment" and parent.child_by_field_name("left") == id_node: return False
+        if parent.type == "for_in_clause" and parent.child_by_field_name("left") == id_node: return False
+        if parent.type == "with_item" and parent.child_by_field_name("alias") == id_node: return False
+        if parent.type == "attribute" and parent.child_by_field_name("attribute") == id_node: return False
+        if parent.type == "call" and parent.child_by_field_name("function") == id_node: return False
+        if parent.type == "decorator": return False
+        if grandparent and grandparent.type == "decorator" and parent.type == "call" and parent.child_by_field_name("function") == id_node : return False
+        if parent.type == "aliased_import" and parent.child_by_field_name("alias") == id_node: return False
+        if parent.type == "dotted_name" and parent.parent and parent.parent.type == "aliased_import" and parent.parent.child_by_field_name("name") == parent : return False
+        if parent.type == "dotted_name" and parent.parent and parent.parent.type == "import_statement": return False
+        if parent.type == "dotted_name" and parent.parent and parent.parent.type == "import_from_statement" and parent.parent.child_by_field_name("module") == parent : return False
+        if any(c.name == var_name for c in result.classes): return False
+        if any(f.name == var_name for f in result.functions): return False
+        return True
+
+    def _find_used_identifiers(self, node: Node, owner_function: ExtractedFunction,
+                               param_names: Set[str], local_var_names: Set[str], result: ParsedFileResult):
+        # (Giữ nguyên logic)
+        if node.type == 'identifier':
+            var_name = self._get_node_text(node)
+            if self._is_variable_usage_context(node, var_name, owner_function, param_names, local_var_names, result):
+                 owner_function.uses_variables.add((var_name, self._get_line_number(node)))
+        for child_idx in range(node.child_count):
+            child = node.child(child_idx)
+            if child:
+                 self._find_used_identifiers(child, owner_function, param_names, local_var_names, result)
+
+    def _parse_function_node(self, func_node: Node, result: ParsedFileResult, class_name: Optional[str] = None) -> Optional[ExtractedFunction]:
+        # (Giữ nguyên logic)
+        try:
+            name_node = func_node.child_by_field_name("name")
+            func_name = self._get_node_text(name_node)
+            if not func_name: return None
+            parameters_node = func_node.child_by_field_name("parameters")
+            params_list, params_str = self._parse_parameters_node(parameters_node, func_name)
+            return_type_node = func_node.child_by_field_name("return_type")
+            return_type_str = self._get_node_text(return_type_node)
+            signature = f"{params_str}" + (f" -> {return_type_str}" if return_type_str else "")
+            body_node = func_node.child_by_field_name("body")
+            extracted_func = ExtractedFunction(
+                name=func_name, start_line=self._get_line_number(func_node),
+                end_line=self._get_end_line_number(func_node), signature=signature.strip(),
+                parameters_str=params_str.strip(), class_name=class_name, body_node=body_node
             )
-            if not call_expression_node: continue
+            extracted_func.parameters = params_list
+            extracted_func.decorators = self._parse_decorators(func_node)
+            self._extract_body_details(body_node, extracted_func, result)
+            return extracted_func
+        except Exception as e:
+            logger.error(f"PythonParser: Error parsing function '{self._get_node_text(func_node.child_by_field_name('name'))}' in {result.file_path}: {e}", exc_info=True)
+            return None
 
-            call_name_node_list = captures_dict.get("func_name_direct", [])
-            obj_name_node_list = captures_dict.get("obj_name", [])
-            method_name_node_list = captures_dict.get("method_name", [])
-
-            call_name_node = call_name_node_list[0] if call_name_node_list else None
-            obj_name_node = obj_name_node_list[0] if obj_name_node_list else None
-            method_name_node = method_name_node_list[0] if method_name_node_list else None
-            
-            call_type, called_name_str, base_object_name_str = "unknown", None, None
-            if method_name_node:
-                call_type, called_name_str = "method", self._get_node_text(method_name_node)
-                if obj_name_node: base_object_name_str = self._get_node_text(obj_name_node)
-            elif call_name_node: 
-                call_type, called_name_str = "direct", self._get_node_text(call_name_node)
-            
-            if called_name_str:
-                current_owner_entity.calls.add(
-                    (called_name_str, base_object_name_str, call_type, self._get_line_number(call_expression_node))
-                )
-
-    def _extract_functions_and_methods(self, scope_node: Node, result: ParsedFileResult, current_class_obj: Optional[ExtractedClass] = None):
-        if not scope_node: return
-        query_obj_funcs = self.queries["functions_and_methods"]
-        for match_as_tuple in query_obj_funcs.matches(scope_node):
-            func_def_node, captures_dict = self._process_match_item(
-                query_obj_funcs, match_as_tuple, ["function.definition"]
+    def _parse_class_node(self, class_node: Node, result: ParsedFileResult) -> Optional[ExtractedClass]:
+        # (Giữ nguyên logic)
+        try:
+            name_node = class_node.child_by_field_name("name")
+            class_name = self._get_node_text(name_node)
+            if not class_name: return None
+            body_node = class_node.child_by_field_name("body")
+            extracted_class = ExtractedClass(
+                name=class_name, start_line=self._get_line_number(class_node),
+                end_line=self._get_end_line_number(class_node), body_node=body_node
             )
-            if not func_def_node: continue
+            extracted_class.decorators = self._parse_decorators(class_node)
+            superclasses_node = class_node.child_by_field_name("superclasses")
+            if superclasses_node:
+                for sc_expr_node in superclasses_node.children:
+                    if sc_expr_node.type not in ['(', ')', ',']:
+                        sc_name = self._get_node_text(sc_expr_node)
+                        if sc_name: extracted_class.superclasses.add(sc_name)
+            if body_node:
+                for child_node in body_node.children:
+                    assignment_node_for_attr = None
+                    if child_node.type == "expression_statement" and child_node.child(0) and child_node.child(0).type == "assignment":
+                        assignment_node_for_attr = child_node.child(0)
+                    elif child_node.type == "assignment":
+                        assignment_node_for_attr = child_node
+                    elif child_node.type == "typed_assignment":
+                        assignment_node_for_attr = child_node
+                    if assignment_node_for_attr:
+                        left_node = assignment_node_for_attr.child_by_field_name("left")
+                        attr_type_str_class: Optional[str] = None
+                        if assignment_node_for_attr.type == "typed_assignment":
+                            type_node = assignment_node_for_attr.child_by_field_name("type")
+                            attr_type_str_class = self._get_node_text(type_node)
+                        if left_node and left_node.type == "identifier":
+                            attr_name = self._get_node_text(left_node)
+                            if attr_name and not any(attr.name == attr_name for attr in extracted_class.attributes):
+                                 extracted_class.attributes.append(ExtractedVariable(
+                                    name=attr_name, start_line=self._get_line_number(left_node),
+                                    end_line=self._get_end_line_number(left_node),
+                                    scope_name=class_name, scope_type="class_attribute", var_type=attr_type_str_class
+                                ))
+                    elif child_node.type == "function_definition":
+                        method = self._parse_function_node(child_node, result, class_name=class_name)
+                        if method: extracted_class.methods.append(method)
+            return extracted_class
+        except Exception as e:
+            logger.error(f"PythonParser: Error parsing class '{self._get_node_text(class_node.child_by_field_name('name'))}' in {result.file_path}: {e}", exc_info=True)
+            return None
 
-            is_valid_scope = False
-            if current_class_obj:
-                if func_def_node.parent == scope_node: is_valid_scope = True
-            else: 
-                if func_def_node.parent == scope_node or \
-                   (func_def_node.parent and func_def_node.parent.type == 'block' and func_def_node.parent.parent == scope_node):
-                    is_valid_scope = True
-            if not is_valid_scope: continue
-
-            func_name_node_list = captures_dict.get("function.name", [])
-            func_name = self._get_node_text(func_name_node_list[0]) if func_name_node_list else None
-
-            params_node_list = captures_dict.get("function.parameters", [])
-            params_str = self._get_node_text(params_node_list[0]) if params_node_list else ""
-            
-            return_type_node_list = captures_dict.get("function.return_type", [])
-            return_type_str = self._get_node_text(return_type_node_list[0]) if return_type_node_list else None
-            
-            func_body_node_list = captures_dict.get("function.body", [])
-            func_body_node = func_body_node_list[0] if func_body_node_list else None
-            
-            if func_name:
-                signature = f"{params_str}" + (f" -> {return_type_str}" if return_type_str else "")
-                func_obj = ExtractedFunction(
-                    name=func_name, start_line=self._get_line_number(func_def_node),
-                    end_line=self._get_end_line_number(func_def_node), signature=signature.strip(),
-                    parameters_str=params_str.strip(), class_name=current_class_obj.name if current_class_obj else None,
-                    body_node=func_body_node
-                )
-                self._extract_calls(func_body_node, func_obj, result)
-                if current_class_obj: current_class_obj.methods.append(func_obj)
-                else: result.functions.append(func_obj)
-
-    def _extract_classes(self, root_node: Node, result: ParsedFileResult):
-        query_obj_classes = self.queries["classes"]
-        for match_as_tuple in query_obj_classes.matches(root_node):
-            class_def_node, captures_dict = self._process_match_item(
-                query_obj_classes, match_as_tuple, ["class.definition"]
+    def _parse_import_statement_node(self, import_node: Node, result: ParsedFileResult) -> Optional[ExtractedImport]:
+        # (Giữ nguyên logic)
+        start_line = self._get_line_number(import_node)
+        end_line = self._get_end_line_number(import_node)
+        imported_names_list: List[Tuple[str, Optional[str]]] = []
+        for name_node in import_node.named_children:
+            if name_node.type == "dotted_name":
+                module_path = self._get_node_text(name_node)
+                if module_path: imported_names_list.append((module_path, None))
+            elif name_node.type == "aliased_import":
+                original_name_node = name_node.child_by_field_name("name")
+                alias_node = name_node.child_by_field_name("alias")
+                if original_name_node:
+                    module_path = self._get_node_text(original_name_node)
+                    alias_text = self._get_node_text(alias_node)
+                    if module_path: imported_names_list.append((module_path, alias_text))
+        if imported_names_list:
+            main_module_path_for_object = imported_names_list[0][0]
+            import_type = "direct_alias" if any(alias for _, alias in imported_names_list) else "direct"
+            return ExtractedImport(
+                import_type=import_type, start_line=start_line, end_line=end_line,
+                module_path=main_module_path_for_object, imported_names=imported_names_list
             )
-            if not class_def_node: continue
+        return None
 
-            class_name_node_list = captures_dict.get("class.name", [])
-            class_name = self._get_node_text(class_name_node_list[0]) if class_name_node_list else None
-            
-            class_body_node_list = captures_dict.get("class.body", [])
-            class_body_node = class_body_node_list[0] if class_body_node_list else None
-            
-            superclasses_set: Set[str] = set()
-            for sc_node in captures_dict.get("superclass", []): # Iterates list of nodes for "superclass"
-                sc_text = self._get_node_text(sc_node)
-                if sc_text: superclasses_set.add(sc_text)
-            
-            if class_name and class_body_node:
-                class_obj = ExtractedClass(
-                    name=class_name, start_line=self._get_line_number(class_def_node),
-                    end_line=self._get_end_line_number(class_def_node), body_node=class_body_node
-                )
-                class_obj.superclasses = superclasses_set
-                self._extract_functions_and_methods(class_body_node, result, class_obj)
-                result.classes.append(class_obj)
+    def _parse_import_from_statement_node(self, import_from_node: Node, result: ParsedFileResult) -> Optional[ExtractedImport]:
+        # (Giữ nguyên logic)
+        try:
+            start_line = self._get_line_number(import_from_node)
+            end_line = self._get_end_line_number(import_from_node)
+            module_path_text: Optional[str] = None
+            imported_items_list: List[Tuple[str, Optional[str]]] = []
+            relative_level = 0
+            module_node = import_from_node.child_by_field_name("module")
+            if module_node:
+                if module_node.type == "dotted_name":
+                    module_path_text = self._get_node_text(module_node)
+                elif module_node.type == "relative_import":
+                    path_parts: List[str] = []
+                    for child_rel in module_node.children:
+                        if child_rel.type == ".": relative_level += 1
+                        elif child_rel.field_name == "name" and (child_rel.type == "identifier" or child_rel.type == "dotted_name"):
+                            part = self._get_node_text(child_rel)
+                            if part: path_parts.append(part)
+                    if path_parts: module_path_text = ("." * relative_level) + ".".join(path_parts)
+                    elif relative_level > 0: module_path_text = "." * relative_level
+            name_field_node = import_from_node.child_by_field_name("name")
+            import_type = "from"
+            if name_field_node:
+                if name_field_node.type == "wildcard_import":
+                    imported_items_list.append(("*", None)); import_type = "from_wildcard"
+                elif name_field_node.type == "import_list":
+                    has_alias = False
+                    for item_node in name_field_node.named_children:
+                        if item_node.type == "dotted_name" or item_node.type == "identifier":
+                            if name := self._get_node_text(item_node): imported_items_list.append((name, None))
+                        elif item_node.type == "aliased_import":
+                            original_name_node = item_node.child_by_field_name("name")
+                            alias_node = item_node.child_by_field_name("alias")
+                            if original_name_node:
+                                if orig_name := self._get_node_text(original_name_node):
+                                    imported_items_list.append((orig_name, self._get_node_text(alias_node))); has_alias = True
+                    if has_alias: import_type = "from_alias"
+            if module_path_text is not None and (imported_items_list or import_type == "from_wildcard"):
+                return ExtractedImport(
+                    import_type=import_type, start_line=start_line, end_line=end_line,
+                    module_path=module_path_text, imported_names=imported_items_list,
+                    relative_level=relative_level )
+            return None
+        except Exception as e:
+            logger.error(f"PythonParser: Error parsing import_from_statement_node at L{self._get_line_number(import_from_node)} in {result.file_path}: {e}", exc_info=True)
+            return None
 
     def _extract_entities(self, root_node: Node, result: ParsedFileResult):
-        self._extract_imports(root_node, result) 
-        self._extract_classes(root_node, result)
-        self._extract_functions_and_methods(root_node, result, current_class_obj=None)
-        
-        logger.debug(
-            f"PythonParser Extracted from {result.file_path}: "
-            f"{len(result.imports)} imports, "
-            f"{len(result.classes)} classes ("
-            f"{sum(len(c.methods) for c in result.classes)} methods), "
-            f"{len(result.functions)} global functions."
-        )
+        # SỬA LỖI TypeError và NameError: Dùng query.matches() và dict access cho captures
+        imports_query = self._get_query("imports_query")
+        if imports_query:
+            try:
+                for pattern_idx, captures_dict in imports_query.matches(root_node):
+                    node = captures_dict.get("import_node") 
+                    if node:
+                        extracted_import = None
+                        if node.type == "import_statement":
+                            extracted_import = self._parse_import_statement_node(node, result)
+                        elif node.type == "import_from_statement":
+                            extracted_import = self._parse_import_from_statement_node(node, result)
+                        if extracted_import:
+                            result.imports.append(extracted_import)
+            except Exception as e:
+                logger.error(f"PythonParser: Error during import extraction main loop in {result.file_path}: {e}", exc_info=True)
 
-_parsers_cache = {}
+        definitions_query = self._get_query("definitions_query")
+        if definitions_query:
+            try:
+                for pattern_idx, captures_dict in definitions_query.matches(root_node):
+                    node_type_key = None
+                    if "definition_node" in captures_dict: node_type_key = "definition_node"
+                    elif "global_assignment_in_expr_stmt" in captures_dict: node_type_key = "global_assignment_in_expr_stmt"
+                    elif "direct_global_assignment" in captures_dict: node_type_key = "direct_global_assignment"
+                    
+                    node = captures_dict.get(node_type_key) if node_type_key else None
+                    if not node: continue
+
+                    parent = node.parent
+                    is_top_level = parent and (parent.type == "module" or
+                                            (parent.type == "block" and parent.parent and parent.parent.type == "module"))
+                    if not is_top_level: continue
+
+                    if node.type == "class_definition":
+                        cls = self._parse_class_node(node, result)
+                        if cls: result.classes.append(cls)
+                    elif node.type == "function_definition":
+                        func = self._parse_function_node(node, result, class_name=None)
+                        if func: result.functions.append(func)
+                    elif node.type == "expression_statement" and node_type_key == "global_assignment_in_expr_stmt":
+                        var_name_node = captures_dict.get("global_var_name_in_expr_stmt_ass")
+                        if var_name_node:
+                            var_name = self._get_node_text(var_name_node)
+                            if var_name and not any(gv.name == var_name for gv in result.global_variables):
+                                result.global_variables.append(ExtractedVariable(
+                                    name=var_name, start_line=self._get_line_number(var_name_node),
+                                    end_line=self._get_end_line_number(var_name_node),
+                                    scope_name=result.file_path, scope_type="global_variable" ))
+                    elif node.type == "assignment" and node_type_key == "direct_global_assignment":
+                        var_name_node = captures_dict.get("global_var_name_in_direct_ass")
+                        if var_name_node:
+                            var_name = self._get_node_text(var_name_node)
+                            if var_name and not any(gv.name == var_name for gv in result.global_variables):
+                                result.global_variables.append(ExtractedVariable(
+                                    name=var_name, start_line=self._get_line_number(var_name_node),
+                                    end_line=self._get_end_line_number(var_name_node),
+                                    scope_name=result.file_path, scope_type="global_variable" ))
+            except Exception as e:
+                logger.error(f"PythonParser: Error during top-level entity extraction in {result.file_path}: {e}", exc_info=True)
+
+        logger.info(
+             f"PythonParser Extracted from {result.file_path}: "
+             f"{len(result.imports)} imports, "
+             f"{len(result.classes)} classes ("
+             f"{sum(len(c.methods) for c in result.classes)} methods, "
+             f"{sum(len(c.attributes) for c in result.classes)} class_attrs), "
+             f"{len(result.functions)} global funcs, "
+             f"{len(result.global_variables)} global vars."
+        )
+        for func_item in result.functions + [method for cls in result.classes for method in cls.methods]:
+            if func_item.uses_variables or func_item.modifies_variables or func_item.created_objects:
+                 logger.debug(f"  Func '{func_item.class_name + '.' if func_item.class_name else ''}{func_item.name}': "
+                              f"Uses({len(func_item.uses_variables)}) {list(func_item.uses_variables)[:3]}, "
+                              f"Mods({len(func_item.modifies_variables)}) {list(func_item.modifies_variables)[:3]}, "
+                              f"Creates({len(func_item.created_objects)}) {list(func_item.created_objects)[:3]}")
+
+
+_parsers_cache: Dict[str, BaseCodeParser] = {}
 def get_code_parser(language: str) -> Optional[BaseCodeParser]:
+    """Get appropriate parser for the given language.
+    
+    Args:
+        language: Programming language name (e.g., 'python', 'javascript', 'typescript', 'java', 'kotlin')
+        
+    Returns:
+        BaseCodeParser instance or None if language not supported
+    """
     language_key = language.lower().strip()
     if not language_key:
+        logger.warning("get_code_parser called with empty language string.")
         return None
+        
+    # Check cache first
     if language_key in _parsers_cache:
         return _parsers_cache[language_key]
-
-    parser_instance: Optional[BaseCodeParser] = None
-    if language_key == "python":
-        parser_instance = PythonParser()
-    else:
-        logger.warning(f"No specific parser class implemented for language: '{language}'. Tree-sitter grammar might be available but entities won't be extracted.")
     
+    parser_instance: Optional[BaseCodeParser] = None
+    
+    if language_key == "python":
+        try:
+            parser_instance = PythonParser()
+            if isinstance(parser_instance, PythonParser):
+                if parser_instance.QUERY_DEFINITIONS and not parser_instance.queries:
+                    logger.error(f"PythonParser for '{language_key}' initialized, but NO queries were compiled. Parser will be ineffective.")
+                elif parser_instance.QUERY_DEFINITIONS and len(parser_instance.queries) < len(parser_instance.QUERY_DEFINITIONS):
+                    logger.warning(f"PythonParser for '{language_key}' initialized with SOME query compilation errors. Results may be incomplete.")
+        except Exception as e:
+            logger.error(f"Failed to instantiate PythonParser for '{language_key}' due to: {type(e).__name__} - {e}", exc_info=True)
+            return None
+            
+    elif language_key in ["javascript", "js"]:
+        try:
+            # Import here to avoid circular imports
+            from .javascript_parser import JavaScriptParser
+            parser_instance = JavaScriptParser("javascript")
+            if isinstance(parser_instance, JavaScriptParser):
+                if parser_instance.QUERY_DEFINITIONS and not parser_instance.queries:
+                    logger.error(f"JavaScriptParser for '{language_key}' initialized, but NO queries were compiled. Parser will be ineffective.")
+                elif parser_instance.QUERY_DEFINITIONS and len(parser_instance.queries) < len(parser_instance.QUERY_DEFINITIONS):
+                    logger.warning(f"JavaScriptParser for '{language_key}' initialized with SOME query compilation errors. Results may be incomplete.")
+        except Exception as e:
+            logger.error(f"Failed to instantiate JavaScriptParser for '{language_key}' due to: {type(e).__name__} - {e}", exc_info=True)
+            return None
+            
+    elif language_key in ["typescript", "ts"]:
+        try:
+            # Import here to avoid circular imports
+            from .javascript_parser import JavaScriptParser
+            parser_instance = JavaScriptParser("typescript")
+            if isinstance(parser_instance, JavaScriptParser):
+                if parser_instance.QUERY_DEFINITIONS and not parser_instance.queries:
+                    logger.error(f"TypeScriptParser for '{language_key}' initialized, but NO queries were compiled. Parser will be ineffective.")
+                elif parser_instance.QUERY_DEFINITIONS and len(parser_instance.queries) < len(parser_instance.QUERY_DEFINITIONS):
+                    logger.warning(f"TypeScriptParser for '{language_key}' initialized with SOME query compilation errors. Results may be incomplete.")
+        except Exception as e:
+            logger.error(f"Failed to instantiate TypeScriptParser for '{language_key}' due to: {type(e).__name__} - {e}", exc_info=True)
+            return None
+            
+    elif language_key == "java":
+        try:
+            # Import here to avoid circular imports
+            from .java_parser import JavaParser
+            parser_instance = JavaParser()
+            if isinstance(parser_instance, JavaParser):
+                if parser_instance.QUERY_DEFINITIONS and not parser_instance.queries:
+                    logger.error(f"JavaParser for '{language_key}' initialized, but NO queries were compiled. Parser will be ineffective.")
+                elif parser_instance.QUERY_DEFINITIONS and len(parser_instance.queries) < len(parser_instance.QUERY_DEFINITIONS):
+                    logger.warning(f"JavaParser for '{language_key}' initialized with SOME query compilation errors. Results may be incomplete.")
+        except Exception as e:
+            logger.error(f"Failed to instantiate JavaParser for '{language_key}' due to: {type(e).__name__} - {e}", exc_info=True)
+            return None
+            
+    elif language_key in ["kotlin", "kt"]:
+        try:
+            # Import here to avoid circular imports
+            from .kotlin_parser import KotlinParser
+            parser_instance = KotlinParser()
+            if isinstance(parser_instance, KotlinParser):
+                if parser_instance.QUERY_DEFINITIONS and not parser_instance.queries:
+                    logger.error(f"KotlinParser for '{language_key}' initialized, but NO queries were compiled. Parser will be ineffective.")
+                elif parser_instance.QUERY_DEFINITIONS and len(parser_instance.queries) < len(parser_instance.QUERY_DEFINITIONS):
+                    logger.warning(f"KotlinParser for '{language_key}' initialized with SOME query compilation errors. Results may be incomplete.")
+        except Exception as e:
+            logger.error(f"Failed to instantiate KotlinParser for '{language_key}' due to: {type(e).__name__} - {e}", exc_info=True)
+            return None
+            
+    elif language_key in ["c", "c_lang"]:
+        try:
+            # Import here to avoid circular imports
+            from .parsers.c_parser import CParser
+            parser_instance = CParser()
+            logger.info(f"C parser instantiated for language: '{language_key}'")
+        except Exception as e:
+            logger.warning(f"Failed to instantiate C parser for '{language_key}': {e}. Files will be skipped.")
+            return None
+            
+    elif language_key in ["cpp", "c++", "cxx"]:
+        try:
+            # Try to create a basic C++ parser using tree-sitter  
+            parser_instance = BaseCodeParser("cpp")
+            logger.info(f"Basic C++ parser instantiated for language: '{language_key}'")
+        except Exception as e:
+            logger.warning(f"Failed to instantiate C++ parser for '{language_key}': {e}. Files will be skipped.")
+            return None
+    else:
+        logger.warning(f"No specific parser class implemented for language: '{language}'. Supported languages: python, javascript, typescript, java, kotlin, c, cpp")
+        return None
+    
+    # Cache the parser instance for reuse
     if parser_instance:
         _parsers_cache[language_key] = parser_instance
+        
     return parser_instance
+
+def get_android_manifest_parser():
+    """Get Android Manifest parser."""
+    try:
+        from .android_manifest_parser import AndroidManifestParser
+        return AndroidManifestParser()
+    except Exception as e:
+        logger.error(f"Failed to instantiate AndroidManifestParser: {e}")
+        return None
+
+def get_gradle_parser(file_path: str):
+    """Get Gradle parser based on file extension."""
+    try:
+        from .gradle_parser import create_gradle_parser
+        return create_gradle_parser(file_path)
+    except Exception as e:
+        logger.error(f"Failed to instantiate GradleParser for {file_path}: {e}")
+        return None

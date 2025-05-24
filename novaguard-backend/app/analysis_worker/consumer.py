@@ -1,14 +1,11 @@
 import json
 import logging
 import time
-import re
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Union
 from pathlib import Path
 
 import tempfile # Để tạo thư mục tạm
-import shutil   # Để xóa thư mục
-from pathlib import Path
 
 from sqlalchemy.orm import Session, sessionmaker  # Đảm bảo import Session
 from app.models.project_model import LLMProviderEnum, OutputLanguageEnum # Import các Enum này nếu cần so sánh
@@ -18,6 +15,7 @@ from app.llm_service import (
     LLMProviderConfig,
     LLMServiceError
 )
+from app.llm_service.service import invoke_llm_analysis_chain, LLMAnalysisResult
 
 from app.core.config import get_settings, Settings
 from app.core.db import SessionLocal as AppSessionLocal
@@ -29,7 +27,9 @@ from app.common.github_client import GitHubAPIClient
 from app.project_service import crud_full_scan
 from app.models import FullProjectAnalysisStatus # Import Enum
 from app.ckg_builder import CKGBuilder
-from .llm_schemas import LLMSingleFinding, LLMStructuredOutput, LLMProjectLevelFinding, LLMProjectAnalysisOutput # Thêm schema mới
+from app.analysis_worker.llm_schemas import (
+    LLMProjectAnalysisOutput, LLMProjectLevelFinding, SeverityLevel
+)
 
 
 # --- Logging Setup ---
@@ -241,7 +241,31 @@ async def run_code_analysis_agent_v1(
         )
 
         num_findings_from_llm = len(structured_llm_output.findings) if structured_llm_output and structured_llm_output.findings else 0
-        logger.info(f"Worker: Received structured response from LLMService for PR: {pr_title_for_log}. Number of raw findings: {num_findings_from_llm}")
+        logger.info(f"Worker (PR): Received structured response from LLMService for PR: {pr_title_for_log}. Number of raw findings: {num_findings_from_llm}")
+        
+        # Enhanced logging for PR analysis results
+        if num_findings_from_llm > 0:
+            logger.info(f"Worker (PR): LLM Analysis Results Summary for '{pr_title_for_log}':")
+            severity_counts = {}
+            file_counts = {}
+            
+            for i, finding in enumerate(structured_llm_output.findings[:5]):  # Log first 5 findings
+                severity = finding.severity.value if hasattr(finding.severity, 'value') else str(finding.severity)
+                severity_counts[severity] = severity_counts.get(severity, 0) + 1
+                
+                if finding.file_path:
+                    file_counts[finding.file_path] = file_counts.get(finding.file_path, 0) + 1
+                
+                message_preview = finding.message[:80] + "..." if len(finding.message) > 80 else finding.message
+                logger.info(f"Worker (PR): Finding #{i+1}: [{severity}] {finding.file_path or 'No file'} L{finding.line_start or 'N/A'} - {message_preview}")
+            
+            if num_findings_from_llm > 5:
+                logger.info(f"Worker (PR): ... and {num_findings_from_llm - 5} more findings")
+            
+            logger.info(f"Worker (PR): Severity breakdown: {severity_counts}")
+            logger.info(f"Worker (PR): Files with issues: {len(file_counts)}")
+        else:
+            logger.info(f"Worker (PR): No findings detected by LLM for PR: {pr_title_for_log}")
 
         # 5. Convert LLM findings to AnalysisFindingCreate schemas (logic này giữ nguyên)
         analysis_findings_to_create: List[am_schemas.AnalysisFindingCreate] = []
@@ -480,11 +504,48 @@ async def create_full_project_dynamic_context(
     # 2. Thông tin tóm tắt từ CKG
     project_graph_id = ckg_builder.project_graph_id # Lấy từ CKGBuilder instance
     ckg_summary = await query_ckg_for_project_summary(project_graph_id, ckg_builder)
-    context["ckg_summary"] = ckg_summary # Đưa toàn bộ dictionary tóm tắt vào
+    
+    # Flatten key metrics for template variables (needed by prompt template)
+    context["total_files"] = ckg_summary.get("total_files", 0)
+    context["total_classes"] = ckg_summary.get("total_classes", 0)
+    context["total_functions_methods"] = ckg_summary.get("total_functions_methods", 0)
+    context["average_functions_per_file"] = ckg_summary.get("average_functions_per_file", 0)
+    
+    # Store both raw dict for code usage and JSON string for template
+    import json
+    context["ckg_summary_raw"] = ckg_summary  # Raw dict for code logic
+    context["ckg_summary"] = json.dumps(ckg_summary, indent=2, ensure_ascii=False)  # JSON string for template
+
+    # Enhanced logging to debug CKG data quality
+    logger.info(f"Full project dynamic context - CKG Summary for {project_model.repo_name}:")
+    logger.info(f"  - Total files: {ckg_summary.get('total_files', 0)}")
+    logger.info(f"  - Total classes: {ckg_summary.get('total_classes', 0)}")
+    logger.info(f"  - Total functions/methods: {ckg_summary.get('total_functions_methods', 0)}")
+    logger.info(f"  - Average functions per file: {ckg_summary.get('average_functions_per_file', 0)}")
+    logger.info(f"  - Main modules: {ckg_summary.get('main_modules', [])}")
+    
+    if ckg_summary.get('top_5_largest_classes_by_methods'):
+        logger.info(f"  - Top 5 largest classes:")
+        for i, cls in enumerate(ckg_summary['top_5_largest_classes_by_methods'][:5], 1):
+            logger.info(f"    {i}. {cls.get('name')} ({cls.get('method_count')} methods) in {cls.get('file_path')}")
+    else:
+        logger.warning(f"  - No large classes found in CKG data")
+    
+    if ckg_summary.get('top_5_most_called_functions'):
+        logger.info(f"  - Top 5 most called functions:")
+        for i, func in enumerate(ckg_summary['top_5_most_called_functions'][:5], 1):
+            logger.info(f"    {i}. {func.get('name')} ({func.get('call_count')} calls) in {func.get('file_path')}")
+    else:
+        logger.warning(f"  - No highly called functions found in CKG data")
+
+    # Check if CKG data is sparse/empty
+    total_entities = ckg_summary.get('total_classes', 0) + ckg_summary.get('total_functions_methods', 0)
+    if total_entities == 0:
+        logger.error(f"CKG data appears empty for project {project_model.repo_name}! This will likely cause LLM hallucination.")
+    elif total_entities < 10:
+        logger.warning(f"CKG data appears sparse ({total_entities} total entities) for project {project_model.repo_name}. LLM may struggle with limited real data.")
 
     # 3. (Tùy chọn) Thêm một số nội dung file quan trọng
-    # Ví dụ: Lấy nội dung của các file trong "main_modules" từ CKG summary
-    # Cẩn thận với context window của LLM.
     important_files_content = {}
     if ckg_summary.get("main_modules"):
         for file_rel_path in ckg_summary["main_modules"][:2]: # Lấy tối đa 2 file cho demo
@@ -495,7 +556,8 @@ async def create_full_project_dynamic_context(
                     important_files_content[file_rel_path] = content
             except Exception as e:
                 logger.warning(f"Could not read content for important file {file_rel_path}: {e}")
-    context["important_files_preview"] = important_files_content
+    # Format as JSON string for template
+    context["important_files_preview"] = json.dumps(important_files_content, indent=2, ensure_ascii=False)
 
 
     # 4. Cấu trúc thư mục (đơn giản)
@@ -508,6 +570,8 @@ async def create_full_project_dynamic_context(
             directory_structure.append(f"[FILE] {item.name}")
     context["directory_listing_top_level"] = "\n".join(directory_structure[:20]) # Giới hạn 20 dòng
 
+    # 5. Thêm format_instructions cho LLM schema
+    context["format_instructions"] = "Return a valid JSON object with keys: project_summary (string), project_level_findings (array), granular_findings (array). Follow the LLMProjectAnalysisOutput schema strictly."
 
     logger.debug(f"Full project dynamic context for project ID {project_model.id} created. Keys: {list(context.keys())}")
     # logger.debug(f"CKG Summary in context: {context.get('ckg_summary')}")
@@ -553,6 +617,38 @@ async def run_full_project_analysis_agents(
         # full_project_context đã chứa "requested_output_language"
         # và các thông tin khác như ckg_summary
 
+        # Check if CKG data is sufficient for meaningful analysis
+        ckg_summary = full_project_context.get("ckg_summary_raw", {})  # Use raw dict instead of JSON string
+        total_entities = ckg_summary.get('total_classes', 0) + ckg_summary.get('total_functions_methods', 0)
+        has_meaningful_data = (
+            ckg_summary.get('total_files', 0) > 0 and
+            total_entities > 0 and
+            (ckg_summary.get('top_5_largest_classes_by_methods') or 
+             ckg_summary.get('top_5_most_called_functions') or
+             ckg_summary.get('main_modules'))
+        )
+        
+        if not has_meaningful_data:
+            logger.warning(f"Insufficient CKG data for meaningful architectural analysis of '{project_name_for_log}'. Providing basic summary instead of calling LLM.")
+            
+            # Create a basic response without LLM hallucination risk
+            basic_summary = f"Project '{project_name_for_log}' analysis completed. "
+            if ckg_summary.get('total_files', 0) > 0:
+                basic_summary += f"Analyzed {ckg_summary['total_files']} files"
+                if ckg_summary.get('total_classes', 0) > 0:
+                    basic_summary += f" with {ckg_summary['total_classes']} classes"
+                if ckg_summary.get('total_functions_methods', 0) > 0:
+                    basic_summary += f" and {ckg_summary['total_functions_methods']} functions/methods"
+                basic_summary += ". No significant architectural concerns detected based on available metrics."
+            else:
+                basic_summary += "Limited project structure data available for analysis."
+            
+            final_project_analysis_output.project_summary = basic_summary
+            logger.info(f"Provided basic summary for '{project_name_for_log}' due to sparse CKG data: {basic_summary}")
+            
+            # Skip LLM analysis and go to final return
+            return final_project_analysis_output
+
         llm_config_architect = LLMProviderConfig(
             provider_name=llm_provider,
             model_name=architectural_model_name, # Có thể là model chung hoặc model riêng cho kiến trúc
@@ -561,7 +657,8 @@ async def run_full_project_analysis_agents(
         )
         logger.info(f"Worker (Full Scan - Arch): Invoking LLMService with provider: {llm_config_architect.provider_name}, model: {llm_config_architect.model_name or 'provider_default'}")
 
-        architectural_llm_result: LLMProjectAnalysisOutput = await invoke_llm_analysis_chain(
+        # Enhanced LLM service call with graceful degradation support
+        architectural_llm_analysis: LLMAnalysisResult = await invoke_llm_analysis_chain(
             prompt_template_str=arch_prompt_template_str,
             dynamic_context_values=full_project_context,
             output_pydantic_model_class=LLMProjectAnalysisOutput,
@@ -569,22 +666,112 @@ async def run_full_project_analysis_agents(
             settings_obj=settings_obj
         )
 
-        if architectural_llm_result:
-            logger.info(f"Architectural analysis agent for '{project_name_for_log}' (model: {architectural_model_name or 'default'}) completed.")
+        if architectural_llm_analysis.parsing_succeeded:
+            # Successfully parsed - use structured output as before
+            architectural_llm_result = architectural_llm_analysis.parsed_output
+            logger.info(f"Architectural analysis agent for '{project_name_for_log}' (model: {architectural_model_name or 'default'}) completed with structured output.")
+            
+            # Enhanced logging for full project analysis results
+            project_findings_count = len(architectural_llm_result.project_level_findings) if architectural_llm_result.project_level_findings else 0
+            granular_findings_count = len(architectural_llm_result.granular_findings) if architectural_llm_result.granular_findings else 0
+            
+            logger.info(f"Worker (Full Scan): Full Project Analysis Results for '{project_name_for_log}':")
+            logger.info(f"Worker (Full Scan): - Project-level findings: {project_findings_count}")
+            logger.info(f"Worker (Full Scan): - Granular findings: {granular_findings_count}")
+            
             if architectural_llm_result.project_summary:
+                summary_preview = architectural_llm_result.project_summary[:150] + "..." if len(architectural_llm_result.project_summary) > 150 else architectural_llm_result.project_summary
+                logger.info(f"Worker (Full Scan): Project Summary: {summary_preview}")
                 final_project_analysis_output.project_summary = architectural_llm_result.project_summary
             
-            if architectural_llm_result.project_level_findings:
+            if project_findings_count > 0:
+                logger.info(f"Worker (Full Scan): Project-level findings details:")
+                severity_counts = {}
+                
+                for i, finding in enumerate(architectural_llm_result.project_level_findings[:3]):  # Log first 3 project findings
+                    severity = finding.severity.value if hasattr(finding.severity, 'value') else str(finding.severity)
+                    severity_counts[severity] = severity_counts.get(severity, 0) + 1
+                    
+                    category = finding.finding_category
+                    desc_preview = finding.description[:100] + "..." if len(finding.description) > 100 else finding.description
+                    components_preview = f" (Components: {', '.join(finding.relevant_components[:2])}{'...' if len(finding.relevant_components) > 2 else ''})" if finding.relevant_components else ""
+                    
+                    logger.info(f"Worker (Full Scan): Project Finding #{i+1}: [{severity}] {category} - {desc_preview}{components_preview}")
+                
+                if project_findings_count > 3:
+                    logger.info(f"Worker (Full Scan): ... and {project_findings_count - 3} more project findings")
+                
+                logger.info(f"Worker (Full Scan): Project findings severity breakdown: {severity_counts}")
                 final_project_analysis_output.project_level_findings.extend(architectural_llm_result.project_level_findings)
             
-            if architectural_llm_result.granular_findings:
+            if granular_findings_count > 0:
+                logger.info(f"Worker (Full Scan): Granular findings details:")
+                file_counts = {}
+                
+                for i, finding in enumerate(architectural_llm_result.granular_findings[:3]):  # Log first 3 granular findings
+                    if finding.file_path:
+                        file_counts[finding.file_path] = file_counts.get(finding.file_path, 0) + 1
+                    
+                    severity = finding.severity.value if hasattr(finding.severity, 'value') else str(finding.severity)
+                    message_preview = finding.message[:80] + "..." if len(finding.message) > 80 else finding.message
+                    
+                    logger.info(f"Worker (Full Scan): Granular Finding #{i+1}: [{severity}] {finding.file_path or 'No file'} L{finding.line_start or 'N/A'} - {message_preview}")
+                
+                if granular_findings_count > 3:
+                    logger.info(f"Worker (Full Scan): ... and {granular_findings_count - 3} more granular findings")
+                
+                logger.info(f"Worker (Full Scan): Files with granular issues: {len(file_counts)}")
+                
                 # Gán agent_name cho granular findings nếu LLM không tự điền
                 for finding in architectural_llm_result.granular_findings:
                     if not finding.agent_name:
                         finding.agent_name = agent_name_architect # Agent đã tạo ra nó
                 final_project_analysis_output.granular_findings.extend(architectural_llm_result.granular_findings)
+            
+            if project_findings_count == 0 and granular_findings_count == 0:
+                logger.info(f"Worker (Full Scan): No specific architectural issues detected by LLM for project '{project_name_for_log}'")
+                
         else:
-            logger.warning(f"Architectural analysis agent for '{project_name_for_log}' returned no result.")
+            # Parsing failed - use raw content as fallback
+            logger.warning(f"Architectural analysis agent for '{project_name_for_log}' parsing failed, using raw output as fallback.")
+            logger.warning(f"Worker (Full Scan): Parsing error: {architectural_llm_analysis.parsing_error}")
+            
+            # Create a project summary from the raw content
+            raw_content = architectural_llm_analysis.raw_content
+            content_preview = raw_content[:500] + "..." if len(raw_content) > 500 else raw_content
+            
+            final_project_analysis_output.project_summary = f"Analysis completed by {architectural_llm_analysis.provider_name} ({architectural_llm_analysis.model_name}). JSON parsing failed, displaying raw analysis below."
+            
+            # Create a special finding to hold the raw content using AnalysisFindingCreate
+            # This will be stored properly in the database with the raw content
+            raw_content_finding_create = am_schemas.AnalysisFindingCreate(
+                file_path="Raw LLM Analysis Output",
+                severity=SeverityLevel.INFO,  # Use INFO since this is informational
+                message=f"LLM provided analysis but output format was not parseable. Raw content preserved for manual review.",
+                suggestion="Review the raw LLM output below for valuable insights that could not be automatically parsed.",
+                agent_name=agent_name_architect,
+                code_snippet=None,
+                finding_type="raw_analysis_output",
+                finding_level="project",
+                module_name="Raw Analysis Output",
+                meta_data={
+                    "parsing_failed": True,
+                    "parsing_error": architectural_llm_analysis.parsing_error,
+                    "provider_name": architectural_llm_analysis.provider_name,
+                    "model_name": architectural_llm_analysis.model_name,
+                    "content_length": len(raw_content)
+                },
+                raw_llm_content=raw_content  # Store the full raw content here
+            )
+            
+            # We'll need to store this finding separately since it's not part of the structured output
+            # Store it in a temporary list to be processed later
+            if not hasattr(final_project_analysis_output, '_raw_content_findings'):
+                final_project_analysis_output._raw_content_findings = []
+            final_project_analysis_output._raw_content_findings.append(raw_content_finding_create)
+            
+            logger.info(f"Worker (Full Scan): Created raw content finding for manual review. Content length: {len(raw_content)} chars")
+            logger.info(f"Worker (Full Scan): Raw content preview: {content_preview}")
 
 
 
@@ -689,6 +876,22 @@ async def process_message_logic(message_value: dict, db: Session, settings_obj: 
             crud_pr_analysis.update_pr_analysis_request_status(db, pr_analysis_request_id, PRAnalysisStatus.DATA_FETCHED)
             logger.info(f"PML (PR): PR ID {pr_analysis_request_id} status updated to DATA_FETCHED. Preparing for LLM analysis.")
 
+            # Generate unique project_graph_id for this PR scan
+            unique_graph_id = CKGBuilder.generate_scan_specific_graph_id(
+                project_id=db_project.id,
+                scan_type="pr_analysis", 
+                scan_id=pr_analysis_request_id
+            )
+            
+            # Store the project_graph_id in the database
+            crud_pr_analysis.update_pr_analysis_project_graph_id(db, pr_analysis_request_id, unique_graph_id)
+            logger.info(f"PML (PR): Generated and stored unique project_graph_id '{unique_graph_id}' for PR ID {pr_analysis_request_id}")
+            
+            # Build CKG with the unique graph ID for this PR
+            # Note: For PR analysis, you might want to build CKG from the PR's changed code
+            # For now, we'll create a CKGBuilder instance with the unique graph ID
+            # You may need to implement PR-specific CKG building logic here
+
             dynamic_context = create_dynamic_project_context(raw_pr_data, db_project, db_pr_request)
             dynamic_context["raw_pr_data_changed_files"] = raw_pr_data.get("changed_files", [])
             
@@ -728,9 +931,6 @@ async def process_message_logic(message_value: dict, db: Session, settings_obj: 
                         # Nếu không, bạn cần query lại:
                         # all_findings_for_pr = crud_finding.get_findings_by_request_id(db, pr_analysis_request_id)
                         # Thay vì query lại, tốt hơn là dùng kết quả từ `created_db_findings` nếu có
-
-                        # Lấy lại findings từ DB để đảm bảo có ID chính xác (nếu created_db_findings không đầy đủ)
-                        # Hoặc bạn có thể dùng `analysis_findings_create_schemas` để đếm trước khi lưu DB
 
                         # Để đơn giản, giả sử `analysis_findings_create_schemas` phản ánh đúng những gì sẽ được lưu
                         for finding_schema in analysis_findings_create_schemas: # Hoặc lặp qua created_db_findings
@@ -851,6 +1051,17 @@ async def process_message_logic(message_value: dict, db: Session, settings_obj: 
             db.refresh(db_full_scan_request)
             logger.info(f"PML (FullScan): Updated Request ID {full_scan_request_id} to PROCESSING.")
 
+        # Generate unique project_graph_id for this full scan
+        unique_full_scan_graph_id = CKGBuilder.generate_scan_specific_graph_id(
+            project_id=db_project_model.id,
+            scan_type="full_scan", 
+            scan_id=full_scan_request_id
+        )
+        
+        # Store the project_graph_id in the database
+        crud_full_scan.update_full_scan_project_graph_id(db, full_scan_request_id, unique_full_scan_graph_id)
+        logger.info(f"PML (FullScan): Generated and stored unique project_graph_id '{unique_full_scan_graph_id}' for Request ID {full_scan_request_id}")
+
         github_token = decrypt_data(db_user_model.github_access_token_encrypted)
         if not github_token:
             error_msg = f"Full Project Scan: GitHub token decryption failed for User ID {user_id} (Request ID {full_scan_request_id})."
@@ -907,7 +1118,7 @@ async def process_message_logic(message_value: dict, db: Session, settings_obj: 
 
 
             # === Bước 2: Xây dựng/Cập nhật CKG (Nếu chưa làm hoặc làm lại) ===
-            ckg_builder_instance = CKGBuilder(project_model=db_project_model) # Luôn cần CKGBuilder
+            ckg_builder_instance = CKGBuilder(project_model=db_project_model, project_graph_id=unique_full_scan_graph_id) # Use unique graph ID
             if db_full_scan_request.status not in [FullProjectAnalysisStatus.CKG_BUILDING, FullProjectAnalysisStatus.ANALYZING]:
                 # Nếu chưa build CKG hoặc resume từ source_fetched
                 crud_full_scan.update_full_scan_request_status(db, full_scan_request_id, FullProjectAnalysisStatus.CKG_BUILDING)
@@ -981,6 +1192,11 @@ async def process_message_logic(message_value: dict, db: Session, settings_obj: 
                         finding_level="file", meta_data=granular_finding.meta_data,
                         finding_type=granular_finding.finding_type
                     ))
+            
+            # Add raw content findings if parsing failed (graceful degradation)
+            if hasattr(llm_analysis_output, '_raw_content_findings') and llm_analysis_output._raw_content_findings:
+                logger.info(f"PML (FullScan): Adding {len(llm_analysis_output._raw_content_findings)} raw content findings to database for manual review")
+                all_findings_to_create_db.extend(llm_analysis_output._raw_content_findings)
             
             if all_findings_to_create_db:
                 # Trước khi tạo, xóa các finding cũ của full_scan_request_id này (nếu có, phòng trường hợp chạy lại)

@@ -31,6 +31,91 @@
             font-size: 1.1rem; /* Tailwind: text-lg (gần bằng) */
             font-weight: 600; /* Tailwind: font-semibold */
         }
+        
+        /* Styles for Raw LLM Content (Graceful Degradation) */
+        .raw-llm-content {
+            background-color: #fffbeb; /* amber-50 */
+            border-left: 4px solid #f59e0b; /* amber-500 */
+            border-radius: 0.5rem;
+            padding: 1rem;
+            margin: 1rem 0;
+            font-family: 'Monaco', 'Consolas', 'Courier New', monospace;
+            font-size: 0.875rem;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 600px;
+            overflow-y: auto;
+            position: relative;
+        }
+        
+        .raw-llm-header {
+            background-color: #f59e0b; /* amber-500 */
+            color: white;
+            padding: 0.5rem 1rem;
+            margin: -1rem -1rem 1rem -1rem;
+            border-radius: 0.375rem 0.375rem 0 0;
+            font-weight: 600;
+            font-size: 0.875rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .raw-llm-toggle {
+            background-color: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .raw-llm-toggle:hover {
+            background-color: rgba(255, 255, 255, 0.3);
+        }
+        
+        .raw-llm-content.collapsed .raw-llm-body {
+            display: none;
+        }
+        
+        .parsing-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.375rem;
+            font-weight: 500;
+        }
+        
+        .parsing-status.success {
+            background-color: #d1fae5; /* green-100 */
+            color: #065f46; /* green-800 */
+        }
+        
+        .parsing-status.failed {
+            background-color: #fee2e2; /* red-100 */
+            color: #991b1b; /* red-800 */
+        }
+        
+        .export-btn {
+            background-color: #6366f1; /* indigo-500 */
+            color: white;
+            padding: 0.375rem 0.75rem;
+            border-radius: 0.375rem;
+            font-size: 0.75rem;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-left: 0.5rem;
+        }
+        
+        .export-btn:hover {
+            background-color: #4f46e5; /* indigo-600 */
+        }
     </style>
 {% endblock %}
 
@@ -76,6 +161,28 @@
         </div>
     </div>
 
+    <div class="mb-4 flex gap-4 items-center">
+      <div class="flex gap-1">
+        <button id="zoom-in-btn" type="button" class="px-2 py-1 bg-gray-200 rounded hover:bg-gray-300 text-lg font-bold" title="Zoom In">+</button>
+        <button id="zoom-out-btn" type="button" class="px-2 py-1 bg-gray-200 rounded hover:bg-gray-300 text-lg font-bold" title="Zoom Out">-</button>
+      </div>
+    </div>
+
+    {# === Project Graph Visualization === #}
+    <div class="mb-10">
+        <h2 class="text-xl font-semibold text-nv-dark mb-2">Project Graph Visualization</h2>
+        <div id="project-graph-vis" style="width:100%; min-height:400px; height:500px; border:1px solid #e5e7eb; border-radius:8px; background:#f9fafb;"></div>
+        {% if project_graph.nodes|length == 0 %}
+          <div class="text-center text-gray-500 my-8">No critical or impacted components detected for this scan.</div>
+        {% endif %}
+        <div class="text-xs text-gray-500 mt-2 flex flex-wrap gap-4">
+            <span><span style="display:inline-block;width:12px;height:12px;background:#6366f1;border-radius:2px;margin-right:4px;"></span>File</span>
+            <span><span style="display:inline-block;width:12px;height:12px;background:#38bdf8;border-radius:2px;margin-right:4px;"></span>Class</span>
+            <span><span style="display:inline-block;width:12px;height:12px;background:#f59e0b;border-radius:2px;margin-right:4px;"></span>Function</span>
+            <span><span style="display:inline-block;width:12px;height:12px;background:#ef4444;border-radius:2px;margin-right:4px;"></span>Highlighted: Impacted by PR</span>
+        </div>
+    </div>
+
      {% if pr_request_details.error_message %}
         <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6 rounded-md" role="alert">
             <p class="font-bold">Analysis Error Encountered</p>
@@ -86,50 +193,131 @@
     <h2 class="text-xl font-semibold text-nv-dark mt-8 mb-5">Findings ({{ findings | length }})</h2>
     
     {% if findings %}
-        {% for finding in findings %}
-        <div class="finding-card finding-severity-{{ finding.severity | lower }} bg-white border border-gray-200 rounded-lg shadow-md mb-6">
-            <div class="p-4 border-b border-gray-200 flex justify-between items-center">
-                {# Giả sử message chứa title hoặc message chính của finding #}
-                <span class="finding-title text-gray-800 whitespace-normal break-words">{{ finding.message }}</span>
-                <span class="severity-badge-{{ finding.severity | lower }} px-2.5 py-1 text-xs font-bold rounded-full">
-                    {{ finding.severity | capitalize }}
-                </span>
-            </div>
-            <div class="p-4 space-y-3 text-sm">
-                <p><strong>File:</strong> <code class="text-nv-med-dark bg-gray-100 px-1.5 py-0.5 rounded-md text-xs">{{ finding.file_path }}</code>
-                   {% if finding.line_start %}
-                     <span class="text-gray-500 ml-1">(Line{{ "s" if finding.line_end and finding.line_start != finding.line_end else "" }}
-                     {{ finding.line_start }}{% if finding.line_end and finding.line_start != finding.line_end %}-{{ finding.line_end }}{% endif %})</span>
-                   {% endif %}
+        {# Analysis Mode Indicator #}
+        {% set has_raw_content = findings|selectattr('raw_llm_content')|list %}
+        {% if has_raw_content %}
+            <div class="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-md">
+                <div class="flex items-center gap-2 mb-2">
+                    <span class="parsing-status failed">
+                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path>
+                        </svg>
+                        Mixed Analysis Mode
+                    </span>
+                </div>
+                <p class="text-sm text-amber-700">
+                    This PR analysis contains both structured findings and raw LLM output. Some analysis could not be parsed into structured format but contains valuable insights for manual review.
                 </p>
-                
-                <div>
-                    <p class="font-semibold text-gray-700">Agent:</p>
-                    <p class="text-gray-600">{{ finding.agent_name or "NovaGuard Analysis Agent" }}</p>
-                </div>
-
-                <div>
-                    <p class="font-semibold text-gray-700">Full Description:</p>
-                    <p class="text-gray-600 whitespace-pre-wrap">{{ finding.message }}</p>
-                </div>
-                
-                {% if finding.suggestion %}
-                <div class="mt-2">
-                    <p class="font-semibold text-gray-700">Suggestion:</p>
-                    <p class="text-gray-600 whitespace-pre-wrap">{{ finding.suggestion }}</p>
-                </div>
-                {% endif %}
-
-                {% if finding.code_snippet %}
-                <div class="mt-3">
-                    <p class="font-semibold text-gray-700 mb-1">Relevant Code Snippet:</p>
-                    {# Thêm class cho ngôn ngữ nếu có, ví dụ 'language-python' #}
-                    {% set lang = finding.file_path.split('.')[-1] if '.' in finding.file_path else 'plaintext' %}
-                    <pre><code class="language-{{ lang }} hljs">{{- finding.code_snippet -}}</code></pre>
-                </div>
-                {% endif %}
             </div>
-        </div>
+        {% else %}
+            <div class="mb-6 p-4 bg-green-50 border border-green-200 rounded-md">
+                <div class="flex items-center gap-2 mb-2">
+                    <span class="parsing-status success">
+                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>
+                        </svg>
+                        Structured Analysis Mode
+                    </span>
+                </div>
+                <p class="text-sm text-green-700">
+                    All PR analysis results were successfully parsed and are displayed in structured format.
+                </p>
+            </div>
+        {% endif %}
+
+        {% for finding in findings %}
+            {% if finding.raw_llm_content %}
+                {# Raw LLM Content Display (Graceful Degradation Mode) #}
+                <div class="raw-llm-content" id="raw-content-pr-{{ loop.index }}">
+                    <div class="raw-llm-header">
+                        <div>
+                            <span>🔍 Raw LLM Analysis Output</span>
+                            <span class="ml-2 text-xs opacity-75">
+                                {% if finding.meta_data and finding.meta_data.provider_name %}
+                                    {{ finding.meta_data.provider_name }}
+                                    {% if finding.meta_data.model_name %}({{ finding.meta_data.model_name }}){% endif %}
+                                {% else %}
+                                    PR Analysis
+                                {% endif %}
+                            </span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button class="raw-llm-toggle" onclick="toggleRawContent('raw-content-pr-{{ loop.index }}')">
+                                <span class="toggle-text">Collapse</span>
+                            </button>
+                            <button class="export-btn" onclick="exportRawContent('raw-content-pr-{{ loop.index }}', 'pr-analysis-{{ loop.index }}.txt')">
+                                Export
+                            </button>
+                        </div>
+                    </div>
+                    <div class="raw-llm-body">
+                        {% if finding.meta_data and finding.meta_data.parsing_error %}
+                            <div class="mb-3 p-3 bg-red-100 border border-red-200 rounded text-sm text-red-800">
+                                <strong>Parsing Error:</strong> {{ finding.meta_data.parsing_error }}
+                            </div>
+                        {% endif %}
+                        <div class="mb-3 text-sm text-amber-700 border-b border-amber-200 pb-2">
+                            <strong>Status:</strong> JSON parsing failed, displaying raw analysis for manual review<br>
+                            <strong>Content Length:</strong> {{ finding.raw_llm_content|length }} characters<br>
+                            <strong>PR Context:</strong> {{ pr_request_details.pr_title or 'PR #' ~ pr_request_details.pr_number }}
+                        </div>
+                        <div class="raw-content-text">{{ finding.raw_llm_content }}</div>
+                    </div>
+                </div>
+            {% else %}
+                {# Standard Structured Finding Display #}
+                <div class="finding-card finding-severity-{{ finding.severity | lower }} bg-white border border-gray-200 rounded-lg shadow-md mb-6">
+                    <div class="p-4 border-b border-gray-200 flex justify-between items-center">
+                        {# Giả sử message chứa title hoặc message chính của finding #}
+                        <span class="finding-title text-gray-800 whitespace-normal break-words">{{ finding.message }}</span>
+                        <div class="flex items-center gap-2">
+                            <span class="parsing-status success">
+                                <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>
+                                </svg>
+                                Structured
+                            </span>
+                            <span class="severity-badge-{{ finding.severity | lower }} px-2.5 py-1 text-xs font-bold rounded-full">
+                                {{ finding.severity | capitalize }}
+                            </span>
+                        </div>
+                    </div>
+                    <div class="p-4 space-y-3 text-sm">
+                        <p><strong>File:</strong> <code class="text-nv-med-dark bg-gray-100 px-1.5 py-0.5 rounded-md text-xs">{{ finding.file_path }}</code>
+                           {% if finding.line_start %}
+                             <span class="text-gray-500 ml-1">(Line{{ "s" if finding.line_end and finding.line_start != finding.line_end else "" }}
+                             {{ finding.line_start }}{% if finding.line_end and finding.line_start != finding.line_end %}-{{ finding.line_end }}{% endif %})</span>
+                           {% endif %}
+                        </p>
+                        
+                        <div>
+                            <p class="font-semibold text-gray-700">Agent:</p>
+                            <p class="text-gray-600">{{ finding.agent_name or "NovaGuard Analysis Agent" }}</p>
+                        </div>
+
+                        <div>
+                            <p class="font-semibold text-gray-700">Full Description:</p>
+                            <p class="text-gray-600 whitespace-pre-wrap">{{ finding.message }}</p>
+                        </div>
+                        
+                        {% if finding.suggestion %}
+                        <div class="mt-2">
+                            <p class="font-semibold text-gray-700">Suggestion:</p>
+                            <p class="text-gray-600 whitespace-pre-wrap">{{ finding.suggestion }}</p>
+                        </div>
+                        {% endif %}
+
+                        {% if finding.code_snippet %}
+                        <div class="mt-3">
+                            <p class="font-semibold text-gray-700 mb-1">Relevant Code Snippet:</p>
+                            {# Thêm class cho ngôn ngữ nếu có, ví dụ 'language-python' #}
+                            {% set lang = finding.file_path.split('.')[-1] if '.' in finding.file_path else 'plaintext' %}
+                            <pre><code class="language-{{ lang }} hljs">{{- finding.code_snippet -}}</code></pre>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            {% endif %}
         {% endfor %}
     {% else %}
         <div class="bg-sky-50 border-l-4 border-sky-400 text-sky-700 p-4 rounded-md" role="alert">
@@ -148,15 +336,171 @@
 
 {% block scripts_extra %}
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-    {# Tải thêm các ngôn ngữ cụ thể nếu cần thiết cho highlight.js #}
-    {# Ví dụ: <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script> #}
+    <script src="https://unpkg.com/cytoscape@3.26.0/dist/cytoscape.min.js"></script>
+    <script src="{{ url_for('static', path='js/ckg_graph.js') }}"></script>
     <script>
+    let cy = null;
     document.addEventListener('DOMContentLoaded', (event) => {
-        // Khởi tạo highlight.js cho tất cả các block code có class 'hljs'
-        // Hoặc bạn có thể dùng selector cụ thể hơn: document.querySelectorAll('pre code[class^="language-"]')
         document.querySelectorAll('pre code.hljs').forEach((el) => {
             hljs.highlightElement(el);
         });
+        // === Project Graph Visualization ===
+        const cyContainer = document.getElementById('project-graph-vis');
+        if (cyContainer && {{ project_graph.nodes|length }} > 0) {
+            const nodes = [
+                {% for n in project_graph.nodes %}
+                {
+                    data: {
+                        id: '{{ n.id }}',
+                        label: ({{ n.labels|tojson }})[0],
+                        name: {{ n.properties.name|tojson if n.properties.name is defined else n.properties.file_path|tojson if n.properties.file_path is defined else n.properties.signature|tojson if n.properties.signature is defined else '""' }},
+                        type: ({{ n.labels|tojson }})[0],
+                    },
+                    classes: [
+                        {% if n.labels[0] == 'File' %}'file'{% elif n.labels[0] == 'Class' %}'class'{% elif n.labels[0] == 'Function' %}'function'{% else %}''{% endif %}
+                        {% if n.id in highlight_node_ids %},'highlighted'{% endif %}
+                    ].join(' ')
+                },
+                {% endfor %}
+            ];
+            const edges = [
+                {% for e in project_graph.edges %}
+                {
+                    data: {
+                        id: '{{ e.id }}',
+                        source: '{{ e.source }}',
+                        target: '{{ e.target }}',
+                        label: '{{ e.type }}',
+                        type: '{{ e.type }}'
+                    }
+                },
+                {% endfor %}
+            ];
+            cy = cytoscape({
+                container: cyContainer,
+                elements: { nodes, edges },
+                style: [
+                    { selector: 'node', style: {
+                        'label': 'data(name)',
+                        'text-valign': 'center',
+                        'text-halign': 'center',
+                        'background-color': '#6366f1',
+                        'color': '#22223b',
+                        'font-size': '10px',
+                        'width': 24, 'height': 24,
+                        'border-width': 2, 'border-color': '#e0e7ef',
+                    }},
+                    { selector: 'node.class', style: { 'background-color': '#38bdf8' } },
+                    { selector: 'node.function', style: { 'background-color': '#f59e0b' } },
+                    { selector: 'node.highlighted', style: { 'background-color': '#ef4444', 'border-color': '#991b1b', 'border-width': 3 } },
+                    { selector: 'edge', style: {
+                        'width': 2,
+                        'line-color': '#b6b6b6',
+                        'target-arrow-color': '#b6b6b6',
+                        'target-arrow-shape': 'triangle',
+                        'curve-style': 'bezier',
+                        'arrow-scale': 1.2,
+                        'label': 'data(label)',
+                        'font-size': '8px',
+                        'color': '#888',
+                        'text-background-color': '#fff',
+                        'text-background-opacity': 0.7,
+                        'text-background-padding': 2,
+                    }},
+                ],
+                layout: { name: 'cose', animate: true, fit: true, padding: 30 }
+            });
+        }
+        // Zoom in/out buttons
+        const zoomInBtn = document.getElementById('zoom-in-btn');
+        const zoomOutBtn = document.getElementById('zoom-out-btn');
+        if (zoomInBtn && zoomOutBtn) {
+            zoomInBtn.onclick = function() {
+                if (cy) cy.zoom({ level: cy.zoom() * 1.2, renderedPosition: { x: cy.width()/2, y: cy.height()/2 } });
+            };
+            zoomOutBtn.onclick = function() {
+                if (cy) cy.zoom({ level: cy.zoom() / 1.2, renderedPosition: { x: cy.width()/2, y: cy.height()/2 } });
+            };
+        }
+        // You may need to pass the correct project_graph_id from your backend context
+        const projectGraphId = '{{ pr_request_details.project_graph_id or project.graph_id }}';
+        window.CKGGraph.init({
+            project_graph_id: projectGraphId,
+            mode: 'pr_impact',
+            // Optionally pass changed_node_ids, depth, etc.
+        });
     });
+    
+    // Toggle raw content visibility
+    function toggleRawContent(contentId) {
+        const content = document.getElementById(contentId);
+        const toggle = content.querySelector('.raw-llm-toggle .toggle-text');
+        
+        if (content.classList.contains('collapsed')) {
+            content.classList.remove('collapsed');
+            toggle.textContent = 'Collapse';
+        } else {
+            content.classList.add('collapsed');
+            toggle.textContent = 'Expand';
+        }
+    }
+    
+    // Export raw content to text file
+    function exportRawContent(contentId, filename) {
+        const content = document.getElementById(contentId);
+        const rawText = content.querySelector('.raw-content-text').textContent;
+        const metadata = content.querySelector('.raw-llm-header').textContent.trim();
+        
+        // Get PR context for better export
+        const prTitle = '{{ pr_request_details.pr_title | replace("'", "\\'") if pr_request_details.pr_title else "PR #" ~ pr_request_details.pr_number }}';
+        const prUrl = '{{ pr_request_details.pr_github_url if pr_request_details.pr_github_url else "" }}';
+        
+        // Prepare export content
+        const exportContent = `NovaGuard AI PR Analysis Export
+Generated: ${new Date().toISOString()}
+PR: ${prTitle}
+${prUrl ? 'URL: ' + prUrl : ''}
+${metadata}
+
+${'='.repeat(80)}
+
+${rawText}`;
+        
+        // Create and download file
+        const blob = new Blob([exportContent], { type: 'text/plain' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        
+        // Show confirmation
+        const exportBtn = content.querySelector('.export-btn');
+        const originalText = exportBtn.textContent;
+        exportBtn.textContent = 'Exported!';
+        exportBtn.style.backgroundColor = '#10b981'; // green-500
+        setTimeout(() => {
+            exportBtn.textContent = originalText;
+            exportBtn.style.backgroundColor = '#6366f1'; // indigo-500
+        }, 2000);
+    }
+    
+    // Copy raw content to clipboard
+    function copyRawContent(contentId) {
+        const content = document.getElementById(contentId);
+        const rawText = content.querySelector('.raw-content-text').textContent;
+        
+        navigator.clipboard.writeText(rawText).then(() => {
+            // Show confirmation
+            alert('Raw analysis content copied to clipboard!');
+        }).catch(err => {
+            console.error('Failed to copy content: ', err);
+            alert('Failed to copy content to clipboard');
+        });
+    }
     </script>
 {% endblock %}

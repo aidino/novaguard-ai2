@@ -43,6 +43,7 @@
                     </a>
                 </div>
                 <div class="flex items-center">
+                    <a href="{{ url_for('ui_about_get') }}" class="px-3 py-2 rounded-md text-sm font-medium hover:bg-nv-med-light hover:text-nv-accent transition-colors duration-150">About</a>
                     {% if current_user %}
                         <a href="{{ url_for('ui_dashboard_get') }}" class="px-3 py-2 rounded-md text-sm font-medium hover:bg-nv-med-light hover:text-nv-accent transition-colors duration-150">Dashboard</a>
                         <span class="text-gray-400 mx-2 text-sm">|</span>
@@ -97,7 +98,7 @@
     </main>
 
     <footer class="bg-nv-dark text-nv-light text-center p-6">
-        <p>&copy; <span id="current-year">{{ current_year if current_year else '2024' }}</span> NovaGuard-AI. All rights reserved.</p>
+        <p>&copy; <span id="current-year">{{ current_year if current_year else '2025' }}</span> ... All rights reserved.</p>
     </footer>
 
     <script>

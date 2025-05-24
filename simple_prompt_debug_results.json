@@ -1,0 +1,41 @@
+{
+  "template_file": "novaguard-backend/app/prompts/architectural_analyst_full_project_v1.md",
+  "template_length": 10396,
+  "template_lines": 210,
+  "template_variables": [
+    "average_functions_per_file",
+    "ckg_summary",
+    "directory_listing_top_level",
+    "format_instructions",
+    "important_files_preview",
+    "main_branch",
+    "project_custom_notes",
+    "project_language",
+    "project_name",
+    "requested_output_language",
+    "total_classes",
+    "total_files",
+    "total_functions_methods"
+  ],
+  "unique_variables_count": 13,
+  "context_keys": [
+    "project_id",
+    "project_name",
+    "project_language",
+    "project_custom_notes",
+    "main_branch",
+    "requested_output_language",
+    "total_files",
+    "total_classes",
+    "total_functions_methods",
+    "average_functions_per_file",
+    "ckg_summary"
+  ],
+  "coverage_percentage": 76.92307692307693,
+  "missing_variables": [
+    "format_instructions",
+    "important_files_preview",
+    "directory_listing_top_level"
+  ],
+  "coverage_ok": false
+}
