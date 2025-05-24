@@ -108,21 +108,57 @@ class BaseCodeParser:
             if tree.root_node.has_error:
                 error_node_found = False
                 first_error_node_info = "Unknown error location"
-                def find_first_error_node(node: Node):
-                    nonlocal error_node_found, first_error_node_info
-                    if error_node_found: return
+                error_details = []
+                
+                def find_error_nodes(node: Node, max_errors: int = 3):
+                    nonlocal error_node_found, first_error_node_info, error_details
+                    if len(error_details) >= max_errors:
+                        return
+                        
                     if node.type == 'ERROR' or node.is_missing:
                         error_node_found = True
-                        first_error_node_info = f"type: {node.type}, line: {self._get_line_number(node)}"
+                        line_num = max(1, self._get_line_number(node))  # Ensure line is at least 1
+                        error_text = self._get_node_text(node) or "<unknown>"
+                        
+                        # Get more context about the error
+                        context_info = ""
+                        if node.parent:
+                            parent_text = self._get_node_text(node.parent)
+                            if parent_text and len(parent_text) > 10:
+                                context_info = f" in {parent_text[:30]}..."
+                        
+                        error_info = f"type: {node.type}, line: {line_num}{context_info}"
+                        
+                        if not first_error_node_info or first_error_node_info == "Unknown error location":
+                            first_error_node_info = error_info
+                            
+                        error_details.append({
+                            "type": node.type,
+                            "line": line_num,
+                            "text": error_text[:50] + "..." if len(error_text) > 50 else error_text,
+                            "context": context_info
+                        })
                         return
+                        
                     for child_node in node.children:
-                        if error_node_found: return
-                        find_first_error_node(child_node)
-                find_first_error_node(tree.root_node)
-                logger.warning(
-                    f"Syntax errors found in file {file_path} during parsing (e.g., near {first_error_node_info}). "
-                    f"CKG data might be incomplete or inaccurate."
-                )
+                        if len(error_details) >= max_errors:
+                            break
+                        find_error_nodes(child_node, max_errors)
+                
+                find_error_nodes(tree.root_node)
+                
+                # Log detailed error information but continue parsing
+                if error_details:
+                    error_summary = ", ".join([f"L{err['line']}:{err['type']}" for err in error_details])
+                    logger.debug(
+                        f"Syntax errors in {file_path} "
+                        f"(errors at: {error_summary}). Attempting partial parsing."
+                    )
+                else:
+                    logger.debug(
+                        f"Syntax errors in {file_path} (e.g., near {first_error_node_info}). "
+                        f"Attempting partial parsing."
+                    )
             self._extract_entities(tree.root_node, result)
             return result
         except Exception as e:
@@ -701,7 +737,7 @@ def get_code_parser(language: str) -> Optional[BaseCodeParser]:
     """Get appropriate parser for the given language.
     
     Args:
-        language: Programming language name (e.g., 'python', 'javascript', 'typescript')
+        language: Programming language name (e.g., 'python', 'javascript', 'typescript', 'java', 'kotlin')
         
     Returns:
         BaseCodeParser instance or None if language not supported
@@ -732,7 +768,7 @@ def get_code_parser(language: str) -> Optional[BaseCodeParser]:
     elif language_key in ["javascript", "js"]:
         try:
             # Import here to avoid circular imports
-            from .parsers.javascript_parser import JavaScriptParser
+            from .javascript_parser import JavaScriptParser
             parser_instance = JavaScriptParser("javascript")
             if isinstance(parser_instance, JavaScriptParser):
                 if parser_instance.QUERY_DEFINITIONS and not parser_instance.queries:
@@ -746,7 +782,7 @@ def get_code_parser(language: str) -> Optional[BaseCodeParser]:
     elif language_key in ["typescript", "ts"]:
         try:
             # Import here to avoid circular imports
-            from .parsers.javascript_parser import JavaScriptParser
+            from .javascript_parser import JavaScriptParser
             parser_instance = JavaScriptParser("typescript")
             if isinstance(parser_instance, JavaScriptParser):
                 if parser_instance.QUERY_DEFINITIONS and not parser_instance.queries:
@@ -756,8 +792,55 @@ def get_code_parser(language: str) -> Optional[BaseCodeParser]:
         except Exception as e:
             logger.error(f"Failed to instantiate TypeScriptParser for '{language_key}' due to: {type(e).__name__} - {e}", exc_info=True)
             return None
+            
+    elif language_key == "java":
+        try:
+            # Import here to avoid circular imports
+            from .java_parser import JavaParser
+            parser_instance = JavaParser()
+            if isinstance(parser_instance, JavaParser):
+                if parser_instance.QUERY_DEFINITIONS and not parser_instance.queries:
+                    logger.error(f"JavaParser for '{language_key}' initialized, but NO queries were compiled. Parser will be ineffective.")
+                elif parser_instance.QUERY_DEFINITIONS and len(parser_instance.queries) < len(parser_instance.QUERY_DEFINITIONS):
+                    logger.warning(f"JavaParser for '{language_key}' initialized with SOME query compilation errors. Results may be incomplete.")
+        except Exception as e:
+            logger.error(f"Failed to instantiate JavaParser for '{language_key}' due to: {type(e).__name__} - {e}", exc_info=True)
+            return None
+            
+    elif language_key in ["kotlin", "kt"]:
+        try:
+            # Import here to avoid circular imports
+            from .kotlin_parser import KotlinParser
+            parser_instance = KotlinParser()
+            if isinstance(parser_instance, KotlinParser):
+                if parser_instance.QUERY_DEFINITIONS and not parser_instance.queries:
+                    logger.error(f"KotlinParser for '{language_key}' initialized, but NO queries were compiled. Parser will be ineffective.")
+                elif parser_instance.QUERY_DEFINITIONS and len(parser_instance.queries) < len(parser_instance.QUERY_DEFINITIONS):
+                    logger.warning(f"KotlinParser for '{language_key}' initialized with SOME query compilation errors. Results may be incomplete.")
+        except Exception as e:
+            logger.error(f"Failed to instantiate KotlinParser for '{language_key}' due to: {type(e).__name__} - {e}", exc_info=True)
+            return None
+            
+    elif language_key in ["c", "c_lang"]:
+        try:
+            # Import here to avoid circular imports
+            from .parsers.c_parser import CParser
+            parser_instance = CParser()
+            logger.info(f"C parser instantiated for language: '{language_key}'")
+        except Exception as e:
+            logger.warning(f"Failed to instantiate C parser for '{language_key}': {e}. Files will be skipped.")
+            return None
+            
+    elif language_key in ["cpp", "c++", "cxx"]:
+        try:
+            # Try to create a basic C++ parser using tree-sitter  
+            parser_instance = BaseCodeParser("cpp")
+            logger.info(f"Basic C++ parser instantiated for language: '{language_key}'")
+        except Exception as e:
+            logger.warning(f"Failed to instantiate C++ parser for '{language_key}': {e}. Files will be skipped.")
+            return None
     else:
-        logger.warning(f"No specific parser class implemented for language: '{language}'. Supported languages: python, javascript, typescript")
+        logger.warning(f"No specific parser class implemented for language: '{language}'. Supported languages: python, javascript, typescript, java, kotlin, c, cpp")
         return None
     
     # Cache the parser instance for reuse
@@ -765,3 +848,21 @@ def get_code_parser(language: str) -> Optional[BaseCodeParser]:
         _parsers_cache[language_key] = parser_instance
         
     return parser_instance
+
+def get_android_manifest_parser():
+    """Get Android Manifest parser."""
+    try:
+        from .android_manifest_parser import AndroidManifestParser
+        return AndroidManifestParser()
+    except Exception as e:
+        logger.error(f"Failed to instantiate AndroidManifestParser: {e}")
+        return None
+
+def get_gradle_parser(file_path: str):
+    """Get Gradle parser based on file extension."""
+    try:
+        from .gradle_parser import create_gradle_parser
+        return create_gradle_parser(file_path)
+    except Exception as e:
+        logger.error(f"Failed to instantiate GradleParser for {file_path}: {e}")
+        return None
