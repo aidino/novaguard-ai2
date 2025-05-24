@@ -78,7 +78,7 @@ You are an expert Software Architect AI with deep expertise in analyzing softwar
 This summary provides comprehensive insights into the project's structure and relationships:
 
 ```json
-{ckg_summary}
+{ckg_summary | tojson(indent=2)}}
 ```
 
 **CKG Data Fields Reference:**
@@ -93,7 +93,7 @@ This summary provides comprehensive insights into the project's structure and re
 ## Important Files Preview
 
 ```json
-{important_files_preview}
+{important_files_preview | tojson(indent=2)}}
 ```
 
 ## Top-Level Directory Structure
@@ -203,7 +203,43 @@ Return ONLY the JSON object. No preamble, explanations, or additional text.
 Adhere STRICTLY to the schema instructions:
 
 ```
-{format_instructions}
+{format_instructions}}
 ```
 
 **Output Language:** All content must be in **{requested_output_language}**.
+
+
+## Template Variables Reference
+
+The following variables are provided by the analysis context:
+
+- `{{{{project_name}}`: 
+- `{{{{project_language}}`: 
+- `{{{{project_custom_notes}}`: 
+- `{{{{main_branch}}`: 
+- `{{{{requested_output_language}}`: 
+- `{{{{total_files}}`: 
+- `{{{{total_classes}}`: 
+- `{{{{total_functions_methods}}`: 
+- `{{{{average_functions_per_file}}`: 
+- `{{{{directory_listing_top_level}}`: 
+- `{{{{important_files_preview}}`: 
+- `{{{{ckg_summary}}`: 
+- `{{{{format_instructions}}`: 
+
+
+## DEBUGGING INFORMATION FOR DEVELOPMENT
+
+When debugging prompt issues, verify these elements:
+
+1. **Template Variables**: All variables in curly braces `{{{{{variable}}}` must exist in context
+2. **CKG Data Quality**: Ensure CKG summary contains meaningful data
+3. **Context Coverage**: Check that context provides all required variables
+4. **Anti-Hallucination**: Verify CKG data prevents fictional references
+
+**Common Issues:**
+- Empty CKG data leads to hallucination
+- Missing variables cause template errors  
+- Malformed JSON filters break rendering
+- Insufficient context causes generic responses
+

@@ -63,13 +63,26 @@ NovaGuard-AI is a web-based platform designed to provide intelligent and in-dept
 
 ## Project Structure
 
-The project is primarily composed of the `novaguard-backend` application:
+The project is organized into the following structure:
 
 ```
 
 novaguard-ai2/
+├── docs/                       \# Project documentation
+│   ├── design/                 \# System design documents
+│   ├── roadmap/                \# Development roadmaps
+│   ├── features/               \# Feature specifications
+│   ├── draft.md                \# Draft notes and ideas
+│   └── README.md               \# Documentation index
 ├── novaguard-backend/
 │   ├── app/
+│   │   ├── ui/                 \# UI routes (refactored from main.py)
+│   │   │   ├── pages.py        \# Home, About, Dashboard routes
+│   │   │   ├── auth.py         \# Login, Register, Logout routes
+│   │   │   ├── projects.py     \# Project management routes
+│   │   │   ├── reports.py      \# Analysis report routes
+│   │   │   ├── dependencies.py \# Common UI dependencies
+│   │   │   └── router.py       \# UI router aggregation
 │   │   ├── analysis\_module/    \# Logic for findings
 │   │   ├── analysis\_worker/    \# Kafka consumer, LLM analysis logic
 │   │   │   └── llm\_schemas.py  \# Pydantic models for LLM output
@@ -83,10 +96,17 @@ novaguard-ai2/
 │   │   ├── static/             \# Static files (CSS, JS)
 │   │   ├── templates/          \# Jinja2 HTML templates
 │   │   ├── webhook\_service/    \# GitHub webhook handling (API, CRUD, schemas)
-│   │   └── main.py             \# FastAPI app entrypoint, UI routes
+│   │   └── main.py             \# FastAPI app entrypoint (refactored - 87% smaller)
+│   ├── docs/                   \# Backend-specific documentation
+│   │   ├── roadmap/            \# Backend development roadmaps
+│   │   ├── features/           \# Backend feature specifications
+│   │   ├── summaries/          \# Technical summaries and reports
+│   │   └── README.md           \# Backend documentation index
 │   ├── database/
 │   │   └── schema.sql          \# PostgreSQL schema definition
-│   ├── tests/                  \# Unit and integration tests
+│   ├── tests/                  \# All test files (organized from root)
+│   │   ├── test_*.py           \# Integration, unit, parser, API tests
+│   │   └── ...                 \# Test modules by feature
 │   ├── .env.example            \# Example environment file
 │   ├── Dockerfile
 │   └── requirements.txt

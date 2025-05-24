@@ -5,7 +5,7 @@ from app.core.db import Base
 from .user_model import User
 from .project_model import Project
 from .pr_analysis_request_model import PRAnalysisRequest, PRAnalysisStatus
-from .analysis_finding_model import AnalysisFinding, PyAnalysisSeverity
+from .analysis_finding_model import AnalysisFinding, PyAnalysisSeverity, PyFindingLevel
 from .full_project_analysis_request_model import FullProjectAnalysisRequest, FullProjectAnalysisStatus
 
 
@@ -17,6 +17,7 @@ __all__ = [
     "PRAnalysisStatus", # Đảm bảo PRAnalysisStatus cũng được export
     "AnalysisFinding",
     "PyAnalysisSeverity",
+    "PyFindingLevel",
     "FullProjectAnalysisRequest",
     "FullProjectAnalysisStatus",
 ]

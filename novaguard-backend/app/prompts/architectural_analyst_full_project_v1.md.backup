@@ -78,7 +78,7 @@ You are an expert Software Architect AI with deep expertise in analyzing softwar
 This summary provides comprehensive insights into the project's structure and relationships:
 
 ```json
-{ckg_summary}
+{{ ckg_summary | tojson(indent=2) }}
 ```
 
 **CKG Data Fields Reference:**
@@ -93,7 +93,7 @@ This summary provides comprehensive insights into the project's structure and re
 ## Important Files Preview
 
 ```json
-{important_files_preview}
+{{ important_files_preview | tojson(indent=2) }}
 ```
 
 ## Top-Level Directory Structure
@@ -203,7 +203,7 @@ Return ONLY the JSON object. No preamble, explanations, or additional text.
 Adhere STRICTLY to the schema instructions:
 
 ```
-{format_instructions}
+{{ format_instructions }}
 ```
 
 **Output Language:** All content must be in **{requested_output_language}**.

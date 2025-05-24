@@ -504,13 +504,17 @@ async def create_full_project_dynamic_context(
     # 2. Thông tin tóm tắt từ CKG
     project_graph_id = ckg_builder.project_graph_id # Lấy từ CKGBuilder instance
     ckg_summary = await query_ckg_for_project_summary(project_graph_id, ckg_builder)
-    context["ckg_summary"] = ckg_summary # Đưa toàn bộ dictionary tóm tắt vào
-
+    
     # Flatten key metrics for template variables (needed by prompt template)
     context["total_files"] = ckg_summary.get("total_files", 0)
     context["total_classes"] = ckg_summary.get("total_classes", 0)
     context["total_functions_methods"] = ckg_summary.get("total_functions_methods", 0)
     context["average_functions_per_file"] = ckg_summary.get("average_functions_per_file", 0)
+    
+    # Store both raw dict for code usage and JSON string for template
+    import json
+    context["ckg_summary_raw"] = ckg_summary  # Raw dict for code logic
+    context["ckg_summary"] = json.dumps(ckg_summary, indent=2, ensure_ascii=False)  # JSON string for template
 
     # Enhanced logging to debug CKG data quality
     logger.info(f"Full project dynamic context - CKG Summary for {project_model.repo_name}:")
@@ -552,7 +556,8 @@ async def create_full_project_dynamic_context(
                     important_files_content[file_rel_path] = content
             except Exception as e:
                 logger.warning(f"Could not read content for important file {file_rel_path}: {e}")
-    context["important_files_preview"] = important_files_content
+    # Format as JSON string for template
+    context["important_files_preview"] = json.dumps(important_files_content, indent=2, ensure_ascii=False)
 
 
     # 4. Cấu trúc thư mục (đơn giản)
@@ -565,6 +570,8 @@ async def create_full_project_dynamic_context(
             directory_structure.append(f"[FILE] {item.name}")
     context["directory_listing_top_level"] = "\n".join(directory_structure[:20]) # Giới hạn 20 dòng
 
+    # 5. Thêm format_instructions cho LLM schema
+    context["format_instructions"] = "Return a valid JSON object with keys: project_summary (string), project_level_findings (array), granular_findings (array). Follow the LLMProjectAnalysisOutput schema strictly."
 
     logger.debug(f"Full project dynamic context for project ID {project_model.id} created. Keys: {list(context.keys())}")
     # logger.debug(f"CKG Summary in context: {context.get('ckg_summary')}")
@@ -611,7 +618,7 @@ async def run_full_project_analysis_agents(
         # và các thông tin khác như ckg_summary
 
         # Check if CKG data is sufficient for meaningful analysis
-        ckg_summary = full_project_context.get("ckg_summary", {})
+        ckg_summary = full_project_context.get("ckg_summary_raw", {})  # Use raw dict instead of JSON string
         total_entities = ckg_summary.get('total_classes', 0) + ckg_summary.get('total_functions_methods', 0)
         has_meaningful_data = (
             ckg_summary.get('total_files', 0) > 0 and
